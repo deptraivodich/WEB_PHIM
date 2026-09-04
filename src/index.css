@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #09090b;
+    color: #e4e4e7;
+  }
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.no-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+/* Custom glowing effects */
+.glow-red {
+  box-shadow: 0 0 25px rgba(229, 9, 20, 0.4);
+}
+
+.glow-red-text {
+  text-shadow: 0 0 12px rgba(229, 9, 20, 0.7);
+}
+
+.glow-cyan-text {
+  text-shadow: 0 0 12px rgba(0, 240, 255, 0.7);
+}
+
+.glass-panel {
+  background: rgba(18, 18, 23, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Skeleton pulse animation */
+@keyframes skeletonPulse {
+  0%, 100% {
+    background-color: rgba(255, 255, 255, 0.04);
+  }
+  50% {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+}
+
+.animate-skeleton {
+  animation: skeletonPulse 1.8s ease-in-out infinite;
+}
+
+/* Player Stacking Context: Ensure Artplayer controls never overlay the fixed top Navbar */
+.art-video-player {
+  z-index: 20 !important;
+}
+.art-video-player .art-state,
+.art-video-player .art-controls,
+.art-video-player .art-layers {
+  z-index: 30 !important;
+}
+

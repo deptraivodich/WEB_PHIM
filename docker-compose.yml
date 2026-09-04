@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8-alpine
+    container_name: webphim_clickhouse
+    restart: always
+    environment:
+      CLICKHOUSE_DB: web_phim
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: default_password
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spy http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fastapi-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: webphim_fastapi
+    restart: always
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: web_phim
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: default_password
+      BATCH_SIZE: 50
+      FLUSH_INTERVAL_SECONDS: 5
+    ports:
+      - "8000:8000"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 500M
+
+volumes:
+  clickhouse_data:
+    driver: local
