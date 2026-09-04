@@ -18,6 +18,8 @@ const VideoPlayer = forwardRef(({
   title = "KKPhim Stream", 
   autoPlay = false,
   onTimeUpdate,
+  onPlay,
+  onPause,
   className = "" 
 }, ref) => {
   const artRef = useRef(null);
@@ -215,6 +217,12 @@ const VideoPlayer = forwardRef(({
     });
 
     // Hook timeupdate, pause, and ended events to notify parent
+    art.on('video:play', () => {
+      if (onPlay) {
+        onPlay();
+      }
+    });
+
     art.on('video:timeupdate', () => {
       if (onTimeUpdate && typeof art.currentTime === 'number') {
         onTimeUpdate(art.currentTime, art.duration || 0);
@@ -222,6 +230,9 @@ const VideoPlayer = forwardRef(({
     });
 
     art.on('video:pause', () => {
+      if (onPause && typeof art.currentTime === 'number') {
+        onPause(art.currentTime);
+      }
       if (onTimeUpdate && typeof art.currentTime === 'number') {
         onTimeUpdate(art.currentTime, art.duration || 0);
       }

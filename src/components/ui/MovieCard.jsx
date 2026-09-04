@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { trackEvent } from '../../services/telemetryService';
 
 /**
  * MovieCard Component - Responsive Grid Sizing & Smooth Scale-In Hover Popup
@@ -54,12 +55,19 @@ const MovieCard = ({
       ? 'right-0 left-auto translate-x-0 origin-right'
       : 'left-1/2 -translate-x-1/2 origin-center';
 
+  const handleTrackClick = () => {
+    trackEvent({
+      movieId: id,
+      actionType: 'click'
+    });
+  };
+
   return (
     <div className={`relative cursor-pointer group select-none block transition-transform duration-300 hover:scale-105 hover:z-50 ${layoutMode === 'carousel' ? 'w-44 sm:w-52 md:w-60 flex-shrink-0' : 'w-full h-full'}`}>
 
       {/* 1. NORMAL CARD VIEW */}
       <div className="w-full h-full space-y-2">
-        <Link to={`/movie/${id}`} className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
+        <Link to={`/movie/${id}`} onClick={handleTrackClick} className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
           <img
             src={poster}
             alt={formattedTitle}
@@ -130,6 +138,7 @@ const MovieCard = ({
           <div className="flex items-center gap-1.5 sm:gap-2 mb-2.5 sm:mb-3.5 w-full">
             <Link
               to={`/watch/${id}`}
+              onClick={handleTrackClick}
               className="flex-1 bg-[#ffce45] text-black font-extrabold py-1.5 px-2.5 rounded-lg hover:bg-amber-300 transition-colors flex justify-center items-center gap-1 shadow-md text-xs"
             >
               <svg className="w-3.5 h-3.5 fill-current flex-shrink-0" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
@@ -146,6 +155,7 @@ const MovieCard = ({
 
             <Link
               to={`/movie/${id}`}
+              onClick={handleTrackClick}
               className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
               title="Xem chi tiết phim"
             >

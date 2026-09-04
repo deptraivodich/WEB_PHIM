@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:23.8-alpine
+    image: clickhouse/clickhouse-server:latest
     container_name: webphim_clickhouse
     restart: always
     environment:
@@ -15,15 +15,16 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-    deploy:
-      resources:
-        limits:
-          memory: 1.5G
+    #deploy:
+    #  resources:
+    #    limits:
+    #      memory: 1.5G
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spy http://localhost:8123/ping || exit 1"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 15
+      start_period: 60s
 
   fastapi-backend:
     build:

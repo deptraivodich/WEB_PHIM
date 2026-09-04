@@ -11,6 +11,7 @@ const HomePage = () => {
   const [allMovies, setAllMovies] = useState([]);
   const [layout, setLayout] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [trendingMovieIds, setTrendingMovieIds] = useState([]);
 
   // Hero Carousel Slide Index
   const [currentSlide, setCurrentSlide] = useState(0);
@@ -59,6 +60,19 @@ const HomePage = () => {
       }
     };
     fetchData();
+
+    const fetchTrending = async () => {
+      try {
+        const response = await fetch("http://localhost:8000/api/trending");
+        const data = await response.json();
+        if (data && data.trending) {
+          setTrendingMovieIds(data.trending.map(t => t.movie_id));
+        }
+      } catch (err) {
+        console.error("Error fetching trending movies:", err);
+      }
+    };
+    fetchTrending();
   }, []);
 
   // Defensive Helper: Filter valid movies for CMS layout sections & eliminate ghost/deleted IDs
@@ -79,9 +93,12 @@ const HomePage = () => {
   }, [allMovies]);
 
   const top10Movies = useMemo(() => {
+    if (trendingMovieIds.length > 0) {
+      return getSectionMovies(trendingMovieIds);
+    }
     const fromLayout = layout?.top10Movies ? getSectionMovies(layout.top10Movies) : [];
     return fromLayout.length > 0 ? fromLayout : validAllMovies.slice(0, 10);
-  }, [layout, getSectionMovies, validAllMovies]);
+  }, [layout, getSectionMovies, validAllMovies, trendingMovieIds]);
 
   const cinemaMovies = useMemo(() => {
     const fromLayout = layout?.cinemaMovies ? getSectionMovies(layout.cinemaMovies) : [];
@@ -311,124 +328,27 @@ const HomePage = () => {
               <div className="w-1.5 h-5 rounded-full bg-amber-400 shadow-[0_0_12px_#f59e0b]"></div>
               <h2 className="text-lg md:text-xl font-extrabold text-white flex items-center gap-2">
                 <span>Top 10 Phim Bộ Hôm Nay</span>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/30">🔥 Admin Configured</span>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 border border-amber-400/30">🔥 Real-time Trending</span>
               </h2>
             </div>
 
-            <div className="flex space-x-4 overflow-x-auto overflow-y-visible no-scrollbar snap-x snap-mandatory py-12 px-1 scroll-smooth -my-8">
+            <div className="flex flex-nowrap overflow-x-auto overflow-y-visible gap-3 sm:gap-4 w-full pb-12 pt-8 -my-4 scroll-smooth no-scrollbar">
               {top10Movies
                 .filter(movie => movie !== undefined && movie !== null && movie.id)
                 .slice(0, 10)
-                .map((movie, idx) => {
-                  const rank = idx + 1;
-                  const isFirstCard = idx === 0;
-                  const isLastCard = idx === Math.min(top10Movies.filter(m => m?.id).length, 10) - 1;
-                  const popupPositionClass = isFirstCard
-                    ? 'left-0 translate-x-0 origin-left'
-                    : isLastCard
-                      ? 'right-0 left-auto translate-x-0 origin-right'
-                      : 'left-1/2 -translate-x-1/2 origin-center';
+                .map((movie, idx, arr) => {
+                  const itemKey = movie.id;
                   return (
-                    <div key={movie?.id || idx} className="snap-start flex-none w-36 sm:w-44 relative group cursor-pointer select-none transition-transform duration-300 hover:scale-105 hover:z-50">
-                      <div className="absolute -top-3 -left-3 z-20 text-4xl sm:text-5xl font-black italic text-amber-400 drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)] stroke-black pointer-events-none">
-                        #{rank}
+                    <div key={itemKey} className="relative group flex-none">
+                      <div className="absolute -top-4 -left-3 z-20 text-4xl sm:text-5xl font-black italic text-amber-400 drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)] stroke-black pointer-events-none">
+                        #{idx + 1}
                       </div>
-
-                      <Link to={`/movie/${movie?.id}`} className="block relative w-full aspect-[2/3] rounded-xl overflow-hidden border border-white/10 shadow-xl">
-                        <img 
-                          src={movie?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'} 
-                          alt={movie?.title || 'Movie'} 
-                          onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'; }}
-                          className="w-full h-full object-cover" 
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-80"></div>
-                        <div className="absolute bottom-2 left-2 right-2">
-                          <h4 className="text-xs font-bold text-white truncate">{movie?.title || 'N/A'}</h4>
-                          <p className="text-[10px] text-amber-300 mt-0.5">Top #{rank} Hôm nay</p>
-                        </div>
-                      </Link>
-
-                      {/* HOVER EXPANDED POPUP CARD - Mirrored from MovieCard.jsx */}
-                      <div className={`absolute top-1/2 -translate-y-1/2 ${popupPositionClass} w-[220px] sm:w-[260px] md:w-[300px] lg:w-[340px] scale-90 opacity-0 invisible group-hover:scale-100 group-hover:opacity-100 group-hover:visible pointer-events-none group-hover:pointer-events-auto transition-all duration-300 ease-out rounded-xl bg-[#14151a] border border-[#2a2d3a] shadow-[0_20px_50px_rgba(0,0,0,0.95)] overflow-hidden z-50 text-white`}>
-                        {/* Top Banner Image (16:9) */}
-                        <div className="relative w-full aspect-video bg-[#1a1e30] overflow-hidden rounded-t-xl">
-                          <img
-                            src={movie?.banner || movie?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600'}
-                            alt={movie?.title || 'Poster'}
-                            onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600'; }}
-                            className="w-full h-full object-cover"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-[#14151a] via-[#14151a]/50 to-transparent"></div>
-                          {/* Rank badge overlay */}
-                          <div className="absolute top-2 left-2 z-10">
-                            <span className="px-2 py-0.5 rounded text-xs font-black bg-amber-500 text-black shadow-md">
-                              🔥 Top #{rank}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Details & Action Controls Section */}
-                        <div className="relative px-3.5 pb-3.5 -mt-6 sm:-mt-8">
-                          <h3 className="text-white font-black text-sm sm:text-base truncate drop-shadow-lg">
-                            {formatVietnameseSentenceCase(movie?.title || 'Phim mới')}
-                          </h3>
-                          {movie?.originalTitle && (
-                            <p className="text-amber-400 text-[11px] sm:text-xs mb-2.5 sm:mb-3 truncate drop-shadow-md font-medium">
-                              {movie.originalTitle}
-                            </p>
-                          )}
-
-                          <div className="flex items-center gap-1.5 sm:gap-2 mb-2.5 sm:mb-3.5 w-full">
-                            <Link
-                              to={`/watch/${movie?.id}`}
-                              className="flex-1 bg-[#ffce45] text-black font-extrabold py-1.5 px-2.5 rounded-lg hover:bg-amber-300 transition-colors flex justify-center items-center gap-1 shadow-md text-xs"
-                            >
-                              <svg className="w-3.5 h-3.5 fill-current flex-shrink-0" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-                              <span>Xem ngay</span>
-                            </Link>
-
-                            <button
-                              type="button"
-                              className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
-                              title="Thêm vào yêu thích"
-                            >
-                              <span className="text-red-400 text-sm leading-none">♥</span> Thích
-                            </button>
-
-                            <Link
-                              to={`/movie/${movie?.id}`}
-                              className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
-                              title="Xem chi tiết phim"
-                            >
-                              <span className="text-gray-300 text-xs leading-none">ℹ</span> Chi tiết
-                            </Link>
-                          </div>
-
-                          {/* Metadata Badges Row */}
-                          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 mb-2 text-[9px] sm:text-[10px] font-semibold">
-                            <span className="px-1.5 py-0.5 rounded border border-amber-400/80 text-amber-400 bg-amber-400/10">
-                              ★ {movie?.imdb || '8.0'} IMDb
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded border border-gray-500 bg-gray-800 text-gray-200">
-                              {movie?.ageRating || 'T16'}
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-                              {movie?.year || '2024'}
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-                              {movie?.season || 'Phần 1'}
-                            </span>
-                            <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-                              {movie?.episodesStatus || 'Tập hoàn tất'}
-                            </span>
-                          </div>
-
-                          {/* Genres Footer Text Row */}
-                          <div className="text-[9px] sm:text-[10px] text-gray-400 font-medium truncate">
-                            {Array.isArray(movie?.genres) ? movie.genres.join(' • ') : (movie?.genres || 'Phim bộ')}
-                          </div>
-                        </div>
-                      </div>
+                      <MovieCard 
+                        movie={movie} 
+                        layoutMode="carousel"
+                        isFirst={idx === 0} 
+                        isLast={idx === arr.length - 1} 
+                      />
                     </div>
                   );
                 })}

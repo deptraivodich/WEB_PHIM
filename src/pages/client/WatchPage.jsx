@@ -11,6 +11,7 @@ import {
   formatDurationToMinutesSeconds 
 } from '../../services/historyService';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { trackEvent } from '../../services/telemetryService';
 
 const WatchPage = () => {
   const { id } = useParams();
@@ -102,6 +103,40 @@ const WatchPage = () => {
       updateWatchPlaybackPosition(currentUser.username, id, currentEpName, currentTime, duration);
     }
   }, [currentUser?.username, id, currentEpName]);
+
+  const handleVideoPlay = useCallback(() => {
+    trackEvent({
+      userId: currentUser?.username || 'anonymous',
+      movieId: id,
+      actionType: 'play'
+    });
+  }, [id, currentUser?.username]);
+
+  const handleVideoPause = useCallback((currentTime) => {
+    trackEvent({
+      userId: currentUser?.username || 'anonymous',
+      movieId: id,
+      actionType: 'pause',
+      watchTime: currentTime,
+      videoQuality: currentMovie?.quality || '1080p'
+    });
+  }, [id, currentUser?.username, currentMovie]);
+
+  // Track pause/exit when component unmounts
+  useEffect(() => {
+    return () => {
+      if (lastSavedTimeRef.current > 0) {
+        trackEvent({
+          userId: currentUser?.username || 'anonymous',
+          movieId: id,
+          actionType: 'pause',
+          watchTime: lastSavedTimeRef.current,
+          videoQuality: currentMovie?.quality || '1080p'
+        });
+      }
+    };
+  }, [id, currentUser?.username, currentMovie]);
+
 
   // Action: Resume from saved position
   const handleResumeWatching = () => {
@@ -229,6 +264,8 @@ const WatchPage = () => {
             title={`${formattedTitle} - Tập ${currentEpName} (${quality})`}
             poster={banner || poster}
             onTimeUpdate={handleTimeUpdate}
+            onPlay={handleVideoPlay}
+            onPause={handleVideoPause}
           />
         </div>
 

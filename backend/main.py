@@ -124,6 +124,7 @@ class TelemetryEvent(BaseModel):
     watch_time: int = Field(default=0, description="Duration watched in seconds")
     video_quality: str = Field(default="", description="Video quality e.g. 1080p, 4K")
     device_type: str = Field(default="web", description="Device type e.g. web, mobile, tv")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Client event timestamp")
 
 @app.get("/health")
 def health_check():
@@ -143,7 +144,9 @@ async def track_event(event: TelemetryEvent, request: Request, background_tasks:
         raise HTTPException(status_code=400, detail=f"Invalid action_type. Must be one of {ALLOWED_ACTIONS}")
 
     client_ip = request.client.host if request.client else ""
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Remove timezone info to avoid ClickHouse DateTime type mismatch (assumes UTC)
+    dt_naive = event.timestamp.replace(tzinfo=None) if event.timestamp.tzinfo else event.timestamp
 
     # Format record matching ClickHouse schema
     record = [
@@ -155,7 +158,7 @@ async def track_event(event: TelemetryEvent, request: Request, background_tasks:
         event.video_quality,
         event.device_type,
         client_ip,
-        now_str
+        dt_naive
     ]
 
     async with buffer_lock:
@@ -168,7 +171,7 @@ async def track_event(event: TelemetryEvent, request: Request, background_tasks:
 
     return {"status": "accepted", "buffered_count": current_len}
 
-@app.get("/api/analytics/trending")
+@app.get("/api/trending")
 def get_trending_movies(limit: int = 10):
     """
     Demonstration OLAP Query: Aggregate real-time trending movies from ClickHouse.
