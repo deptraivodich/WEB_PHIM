@@ -9,6 +9,10 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import clickhouse_connect
+import re
+import urllib.request
+import json
+
 
 # Logging setup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -124,7 +128,6 @@ class TelemetryEvent(BaseModel):
     watch_time: int = Field(default=0, description="Duration watched in seconds")
     video_quality: str = Field(default="", description="Video quality e.g. 1080p, 4K")
     device_type: str = Field(default="web", description="Device type e.g. web, mobile, tv")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Client event timestamp")
 
 @app.get("/health")
 def health_check():
@@ -144,9 +147,7 @@ async def track_event(event: TelemetryEvent, request: Request, background_tasks:
         raise HTTPException(status_code=400, detail=f"Invalid action_type. Must be one of {ALLOWED_ACTIONS}")
 
     client_ip = request.client.host if request.client else ""
-
-    # Remove timezone info to avoid ClickHouse DateTime type mismatch (assumes UTC)
-    dt_naive = event.timestamp.replace(tzinfo=None) if event.timestamp.tzinfo else event.timestamp
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     # Format record matching ClickHouse schema
     record = [
@@ -158,7 +159,7 @@ async def track_event(event: TelemetryEvent, request: Request, background_tasks:
         event.video_quality,
         event.device_type,
         client_ip,
-        dt_naive
+        now_str
     ]
 
     async with buffer_lock:
@@ -171,7 +172,7 @@ async def track_event(event: TelemetryEvent, request: Request, background_tasks:
 
     return {"status": "accepted", "buffered_count": current_len}
 
-@app.get("/api/trending")
+@app.get("/api/analytics/trending")
 def get_trending_movies(limit: int = 10):
     """
     Demonstration OLAP Query: Aggregate real-time trending movies from ClickHouse.
@@ -214,3 +215,109 @@ def get_trending_movies(limit: int = 10):
     except Exception as e:
         logger.error(f"Error querying trending analytics: {e}")
         return {"error": str(e), "trending": []}
+
+
+# -------------------------------------------------------------------
+# Movie Crawler API Endpoint (PhimAPI -> TSV format for Magic Import)
+# -------------------------------------------------------------------
+class CrawlRequest(BaseModel):
+    url: str
+
+PHIM_API_BASE_URL = os.getenv("PHIM_API_BASE_URL", "https://phimapi.com/phim")
+
+@app.post("/api/crawl")
+@app.get("/api/crawl")
+async def crawl_movie_api(request: Optional[CrawlRequest] = None, url: Optional[str] = None):
+    """
+    Trích xuất dữ liệu phim từ PhimAPI qua URL hoặc Slug, trả về chuỗi String định dạng TSV.
+    """
+    target_url = (request.url if request else url) or ""
+    target_url = target_url.strip()
+
+    if not target_url:
+        raise HTTPException(status_code=400, detail="Vui lòng cung cấp URL hoặc Slug phim!")
+
+    # 1. Trích xuất ID (slug) của phim từ URL
+    slug = target_url.rstrip('/').split('/')[-1]
+
+    # API Base URL từ biến môi trường
+    api_url = f"{PHIM_API_BASE_URL.rstrip('/')}/{slug}"
+
+    try:
+        logger.info(f"🌐 Đang gọi dữ liệu từ API: {api_url}")
+        req = urllib.request.Request(
+            api_url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status != 200:
+                raise HTTPException(status_code=400, detail="Không thể kết nối API. Kiểm tra mạng hoặc URL!")
+            res_body = response.read().decode('utf-8')
+            data = json.loads(res_body)
+
+        if not data.get('status'):
+            raise HTTPException(status_code=404, detail="API báo không tìm thấy phim này trong hệ thống!")
+
+        movie = data.get('movie', {})
+        title = movie.get('name', '')
+        original_title = movie.get('origin_name', '')
+        year = str(movie.get('year', '2026'))
+
+        # Xử lý Ảnh bìa
+        poster_url = movie.get('thumb_url', '')
+        if poster_url and not poster_url.startswith('http'):
+            poster_url = f"https://phimimg.com/{poster_url}"
+
+        # Xử lý điểm IMDb / TMDB
+        imdb_data = movie.get('imdb', {}) or {}
+        tmdb_data = movie.get('tmdb', {}) or {}
+        raw_score = imdb_data.get('vote_average') or tmdb_data.get('vote_average')
+
+        imdb = f"{raw_score} /10" if raw_score else ""
+
+        episodes_data = data.get('episodes', [])
+        if not episodes_data:
+            raise HTTPException(status_code=400, detail="Phim chưa cập nhật tập nào!")
+
+        server_data = episodes_data[0].get('server_data', [])
+        if not server_data:
+            raise HTTPException(status_code=400, detail="Danh sách tập phim rỗng!")
+
+        # Chuẩn bị dữ liệu TSV chuẩn Magic Import
+        headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"]
+        tsv_lines = ["\t".join(headers)]
+
+        for index, ep in enumerate(server_data):
+            raw_ep_name = ep.get('name', str(index + 1))
+            ep_url = ep.get('link_m3u8', '')
+
+            # Chuẩn hóa số tập (bỏ số 0 ở đầu nếu có)
+            match = re.search(r'\d+', raw_ep_name)
+            if match:
+                ep_num = str(int(match.group()))
+            else:
+                ep_num = raw_ep_name
+
+            # Dòng đầu tiên (Tập 1): Full metadata
+            if index == 0:
+                row = [title, original_title, ep_num, ep_url, poster_url, imdb, year, ""]
+            # Các tập sau: Bỏ trống metadata
+            else:
+                row = ["", "", ep_num, ep_url, "", "", "", ""]
+
+            tsv_lines.append("\t".join(row))
+
+        tsv_result = "\n".join(tsv_lines)
+        return {
+            "status": True,
+            "message": f"Cào dữ liệu thành công cho phim: {title}",
+            "slug": slug,
+            "episodes_count": len(server_data),
+            "tsv": tsv_result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Lỗi bất ngờ khi cào phim: {e}")
+        raise HTTPException(status_code=500, detail=f"Lỗi máy chủ khi cào phim: {str(e)}")
+
