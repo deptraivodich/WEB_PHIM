@@ -105,6 +105,123 @@ const MagicImport = () => {
   const [errorMessage, setErrorMessage] = useState('');
   const [expandedEpisodeIndex, setExpandedEpisodeIndex] = useState(null);
 
+  // States for Automated PhimAPI Crawler
+  const [targetUrl, setTargetUrl] = useState('');
+  const [isFetchingApi, setIsFetchingApi] = useState(false);
+  const [crawlStatus, setCrawlStatus] = useState(null);
+
+  // Fetch API crawler logic
+  const handleFetchApi = async () => {
+    if (!targetUrl.trim()) {
+      setCrawlStatus({ type: 'error', text: 'Vui lòng nhập URL phim hoặc Slug!' });
+      return;
+    }
+
+    setIsFetchingApi(true);
+    setCrawlStatus({ type: 'info', text: 'Đang gọi API bóc tách dữ liệu phim...' });
+    setErrorMessage('');
+
+    try {
+      const rawInput = targetUrl.trim();
+      const slug = rawInput.replace(/\/+$/, '').split('/').pop();
+      let tsvResult = '';
+
+      // 1. Thử gọi API Backend FastAPI (nếu backend đang chạy)
+      const backendApiUrl = import.meta.env.VITE_CRAWLER_API_URL || 'http://localhost:8000/api/crawl';
+      try {
+        const response = await fetch(backendApiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: rawInput })
+        });
+
+        if (response.ok) {
+          const resData = await response.json();
+          if (resData.status && resData.tsv) {
+            tsvResult = resData.tsv;
+          }
+        }
+      } catch (backendError) {
+        console.warn("Backend API endpoint chưa phản hồi, tự động fallback cào trực tiếp PhimAPI:", backendError);
+      }
+
+      // 2. Client-side Fetch Fallback nếu Backend chưa được khởi chạy
+      if (!tsvResult) {
+        const phimApiBase = import.meta.env.VITE_PHIM_API_BASE_URL || 'https://phimapi.com/phim';
+        const directApiUrl = `${phimApiBase.replace(/\/+$/, '')}/${slug}`;
+
+        const res = await fetch(directApiUrl);
+        if (!res.ok) {
+          throw new Error('Không thể gọi API PhimAPI. Kiểm tra kết nối mạng hoặc URL!');
+        }
+
+        const data = await res.json();
+        if (!data.status || !data.movie) {
+          throw new Error('API báo không tìm thấy phim này trong hệ thống!');
+        }
+
+        const movie = data.movie;
+        const title = movie.name || '';
+        const originalTitle = movie.origin_name || '';
+        const year = String(movie.year || '2026');
+
+        let posterUrl = movie.thumb_url || '';
+        if (posterUrl && !posterUrl.startsWith('http')) {
+          posterUrl = `https://phimimg.com/${posterUrl}`;
+        }
+
+        const imdbData = movie.imdb || {};
+        const tmdbData = movie.tmdb || {};
+        const rawScore = imdbData.vote_average || tmdbData.vote_average;
+        const imdb = rawScore ? `${rawScore} /10` : '';
+
+        const episodesData = data.episodes || [];
+        if (!episodesData.length) {
+          throw new Error('Phim chưa cập nhật tập nào!');
+        }
+
+        const serverData = episodesData[0]?.server_data || [];
+        if (!serverData.length) {
+          throw new Error('Không tìm thấy danh sách tập phim!');
+        }
+
+        const headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"];
+        const lines = [headers.join('\t')];
+
+        serverData.forEach((ep, index) => {
+          const rawEpName = ep.name || String(index + 1);
+          const epUrl = ep.link_m3u8 || '';
+
+          const match = rawEpName.match(/\d+/);
+          const epNum = match ? String(parseInt(match[0], 10)) : rawEpName;
+
+          if (index === 0) {
+            lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, ''].join('\t'));
+          } else {
+            lines.push(['', '', epNum, epUrl, '', '', '', ''].join('\t'));
+          }
+        });
+
+        tsvResult = lines.join('\n');
+      }
+
+      // TỰ ĐỘNG GẮN TRỰC TIẾP CHUỖI TSV VÀO TEXTAREA MAGIC IMPORT
+      setRawText(tsvResult);
+      setCrawlStatus({ 
+        type: 'success', 
+        text: `🎉 Fetch thành công! Đã tự động điền dữ liệu phim dạng TSV vào khung bên dưới.` 
+      });
+    } catch (err) {
+      setCrawlStatus({ 
+        type: 'error', 
+        text: `❌ Lỗi: ${err.message || 'Không thể cào dữ liệu phim.'}` 
+      });
+    } finally {
+      setIsFetchingApi(false);
+    }
+  };
+
+
   // Fetch current existing movies in database to detect matches
   const loadExistingMovies = async () => {
     try {
@@ -424,6 +541,58 @@ const MagicImport = () => {
           >
             <span>📄 Nạp Bảng Mẫu Phim Bộ (Series)</span>
           </button>
+        </div>
+
+        {/* Automated PhimAPI Crawler Input Section */}
+        <div className="p-4 rounded-xl bg-surface-card/60 border border-amber-500/30 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+            <label htmlFor="target_url" className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+              <span>🚀 Tự Động Cào Phim Qua URL (PhimAPI):</span>
+            </label>
+            <span className="text-[11px] text-gray-400">
+              Ví dụ URL: <code className="text-neon-cyan font-mono bg-black/40 px-1.5 py-0.5 rounded">https://phimapi.com/phim/cuoc-chien-bang-dang</code>
+            </span>
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-center gap-2">
+            <input 
+              id="target_url"
+              name="target_url"
+              type="text"
+              value={targetUrl}
+              onChange={(e) => setTargetUrl(e.target.value)}
+              placeholder="Dán link phim (https://phimapi.com/phim/slug-phim) hoặc slug vào đây..."
+              className="flex-1 w-full px-4 py-2.5 rounded-xl bg-black/50 border border-glass-border text-xs text-white placeholder-gray-500 focus:outline-none focus:border-amber-400 font-mono transition-all"
+            />
+            <button
+              type="button"
+              onClick={handleFetchApi}
+              disabled={isFetchingApi || !targetUrl.trim()}
+              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-black text-xs font-black transition-all shadow-[0_0_15px_rgba(245,158,11,0.4)] disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+            >
+              {isFetchingApi ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
+                  <span>Đang Fetch API...</span>
+                </>
+              ) : (
+                <>
+                  <span>⚡ Fetch API</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {crawlStatus && (
+            <div className={`p-2.5 rounded-lg border text-xs flex items-center gap-2 animate-fadeIn ${
+              crawlStatus.type === 'success' ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300' :
+              crawlStatus.type === 'error' ? 'bg-red-500/15 border-red-500/30 text-red-300' :
+              'bg-neon-cyan/15 border-neon-cyan/30 text-neon-cyan'
+            }`}>
+              <span>{crawlStatus.type === 'success' ? '✅' : crawlStatus.type === 'error' ? '❌' : 'ℹ️'}</span>
+              <span>{crawlStatus.text}</span>
+            </div>
+          )}
         </div>
 
         {/* Textarea Input */}

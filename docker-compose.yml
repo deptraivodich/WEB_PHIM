@@ -40,8 +40,13 @@ services:
       CLICKHOUSE_PASSWORD: default_password
       BATCH_SIZE: 50
       FLUSH_INTERVAL_SECONDS: 5
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend:/app
+
     depends_on:
       clickhouse:
         condition: service_healthy

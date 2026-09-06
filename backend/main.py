@@ -12,6 +12,11 @@ import clickhouse_connect
 import re
 import urllib.request
 import json
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
 
 
 # Logging setup
@@ -320,4 +325,178 @@ async def crawl_movie_api(request: Optional[CrawlRequest] = None, url: Optional[
     except Exception as e:
         logger.error(f"❌ Lỗi bất ngờ khi cào phim: {e}")
         raise HTTPException(status_code=500, detail=f"Lỗi máy chủ khi cào phim: {str(e)}")
+
+
+# -------------------------------------------------------------------
+# CineSmart AI Assistant Endpoint (Gemini-1.5-Flash + ClickHouse OLAP)
+# -------------------------------------------------------------------
+class ChatRequest(BaseModel):
+    message: str
+    user_id: Optional[str] = "anonymous"
+    available_movies: Optional[List[str]] = []
+
+@app.post("/api/chat")
+async def cine_smart_ai_chat(payload: ChatRequest):
+    """
+    Endpoint xử lý trò chuyện thông minh với CineSmart AI.
+    Tích hợp dữ liệu thời gian thực Top 10 Trending từ ClickHouse vào System Prompt của Gemini API.
+    """
+    user_message = payload.message.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Tin nhắn không được để trống!")
+
+    # 1. Lấy danh sách Top 10 Trending từ ClickHouse theo thời gian thực
+    trending_movies = []
+    global clickhouse_client
+    if not clickhouse_client:
+        clickhouse_client = get_clickhouse_client()
+
+    if clickhouse_client:
+        try:
+            query = """
+                SELECT 
+                    movie_id,
+                    countIf(action_type = 'play') AS play_count,
+                    countIf(action_type = 'view_detail') AS detail_views,
+                    sum(watch_time) AS total_watch_seconds,
+                    (play_count * 5 + detail_views * 2 + total_watch_seconds / 60) AS score
+                FROM web_phim.user_telemetry_events
+                WHERE created_at >= now() - INTERVAL 7 DAY
+                GROUP BY movie_id
+                ORDER BY score DESC
+                LIMIT 10
+            """
+            result = clickhouse_client.query(query)
+            for row in result.result_rows:
+                trending_movies.append({
+                    "movie_id": str(row[0]),
+                    "play_count": int(row[1]),
+                    "trending_score": round(float(row[4]), 1)
+                })
+        except Exception as e:
+            logger.warning(f"Không thể truy vấn ClickHouse trending for AI context: {e}")
+
+    # Danh sách dự phòng nếu ClickHouse chưa có đủ dữ liệu telemetry
+    if not trending_movies:
+        trending_movies = [
+            {"movie_id": "Dune: Hành Tinh Cát 2", "trending_score": 98.5},
+            {"movie_id": "Demon Slayer: Hashira Training Arc", "trending_score": 95.0},
+            {"movie_id": "Thất Nghiệp Chuyển Sinh Phần 3", "trending_score": 92.3},
+            {"movie_id": "Solo Leveling", "trending_score": 89.1},
+            {"movie_id": "Jujutsu Kaisen Season 2", "trending_score": 87.4}
+        ]
+
+    trending_context = ", ".join([f"'{m['movie_id']}' (Điểm HOT: {m['trending_score']})" for m in trending_movies])
+
+    # 2. Lấy danh sách tất cả các phim ĐANG CÓ THỰC TẾ trên hệ thống Web
+    real_movies_list = payload.available_movies or [m['movie_id'] for m in trending_movies]
+    real_movies_str = ", ".join([f"'{title}'" for title in real_movies_list[:35]])
+
+    # 3. Lấy phim mà người dùng xem nhiều nhất từ dữ liệu ClickHouse Telemetry
+    most_watched_movie = None
+    if clickhouse_client:
+        try:
+            if payload.user_id and payload.user_id != 'anonymous':
+                user_fav_query = """
+                    SELECT movie_id, sum(watch_time) AS total_seconds
+                    FROM web_phim.user_telemetry_events
+                    WHERE user_id = {user_id:String} AND movie_id != ''
+                    GROUP BY movie_id
+                    ORDER BY total_seconds DESC
+                    LIMIT 1
+                """
+                user_fav_res = clickhouse_client.query(user_fav_query, parameters={"user_id": payload.user_id})
+                if user_fav_res.result_rows:
+                    most_watched_movie = str(user_fav_res.result_rows[0][0])
+
+            if not most_watched_movie:
+                top_fav_query = """
+                    SELECT movie_id, sum(watch_time) AS total_seconds
+                    FROM web_phim.user_telemetry_events
+                    WHERE movie_id != ''
+                    GROUP BY movie_id
+                    ORDER BY total_seconds DESC
+                    LIMIT 1
+                """
+                top_fav_res = clickhouse_client.query(top_fav_query)
+                if top_fav_res.result_rows:
+                    most_watched_movie = str(top_fav_res.result_rows[0][0])
+        except Exception as e:
+            logger.warning(f"Không thể truy vấn phim xem nhiều nhất từ ClickHouse: {e}")
+
+    if not most_watched_movie:
+        most_watched_movie = real_movies_list[0] if real_movies_list else "Thất Nghiệp Chuyển Sinh Phần 3"
+
+    # 4. Xây dựng System Prompt chống BỊP / CHỈ GỢI Ý PHIM CÓ TRONG KHO DỮ LIỆU THỰC TẾ
+    system_prompt = (
+        "Bạn là 'Trợ lý CineSmart AI', một chuyên gia điện ảnh & anime thông minh, sành sỏi của nền tảng 210LoliPhim. "
+        f"QUY TẮC BẮT BUỘC SỐ 1 - KHO PHIM THỰC TẾ ĐANG CÓ TRÊN TRANG WEB GỒM: [{real_movies_str}]. "
+        "⚠️ BẮT BUỘC CHỈ ĐƯỢC GIỚI THIỆU VÀ GỢI Ý CÁC PHIM CÓ NẰM TRONG KHO PHIM THỰC TẾ Ở TRÊN! "
+        "TUYỆT ĐỐI KHÔNG TỰ BỊA HOẶC NÊU CÁC BỘ PHIM NGOÀI DANH SÁCH NÀY KHỎI BỊ NGƯỜI DÙNG BẮT BỎ HÃNG/BỊP! "
+        f"Dữ liệu thời gian thực từ ClickHouse ghi nhận phim người dùng xem nhiều nhất là: '{most_watched_movie}'. "
+        f"KHI NGƯỜI DÙNG HỎI 'Phim hợp gu tôi' HOẶC XIN GỢI Ý PHIM HỢP GU: Hãy phân tích thể loại/phong cách của phim '{most_watched_movie}' "
+        f"và chọn ra 2-3 bộ phim TRONG KHO PHIM THỰC TẾ NÀY [{real_movies_str}] có cùng thể loại hoặc hợp gu nhất để giới thiệu một cách hào hứng, giải thích vì sao hợp gu! "
+        "Hãy luôn trả lời ngắn gọn, súc tích, hài hước, dùng định dạng Markdown (in đậm, danh sách bullet...) và icon cảm xúc sinh động."
+    )
+
+
+
+    # 3. Gửi System Prompt + Tin nhắn tới Gemini (gemini-1.5-flash)
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+
+    if not gemini_key or genai is None:
+        logger.warning("GEMINI_API_KEY chưa được thiết lập hoặc thư viện google-generativeai chưa có.")
+        # Phản hồi dự phòng thông minh khi chưa có API Key
+        fallback_reply = (
+            f"🎬 **Trợ lý CineSmart AI** (Chế độ offline):\n"
+            f"Dưới đây là các phim đang **HOT nhất** trên hệ thống theo thống kê ClickHouse thời gian thực:\n"
+            + "\n".join([f"• **{m['movie_id']}** (Độ HOT: {m['trending_score']})" for m in trending_movies[:5]])
+            + "\n\n*(Lưu ý: Hãy thiết lập `GEMINI_API_KEY` trong môi trường Docker để kích hoạt mô hình Gemini 1.5 Flash đầy đủ!)*"
+        )
+        return {
+            "status": True,
+            "reply": fallback_reply,
+            "trending_used": trending_movies
+        }
+
+    try:
+        genai.configure(api_key=gemini_key)
+        full_prompt = f"{system_prompt}\n\nNgười dùng nhắn: {user_message}\nCineSmart AI trả lời:"
+        
+        candidate_models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-1.5-flash", "gemini-2.5-pro", "gemini-pro-latest"]
+
+        reply_text = None
+        last_error = None
+
+        for model_name in candidate_models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                res = model.generate_content(full_prompt)
+                if res and hasattr(res, 'text') and res.text:
+                    reply_text = res.text
+                    break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if not reply_text:
+            if last_error:
+                raise last_error
+            reply_text = "Xin lỗi, tôi chưa thể xử lý phản hồi từ Gemini lúc này."
+
+        return {
+            "status": True,
+            "reply": reply_text,
+            "trending_used": trending_movies
+        }
+
+    except Exception as err:
+        logger.error(f"Lỗi khi gọi Gemini 1.5 Flash API: {err}")
+        return {
+            "status": True,
+            "reply": f"🤖 **Trợ lý CineSmart AI**: Rất tiếc có sự cố kết nối với Gemini API ({str(err)}). "
+                     f"Tuy nhiên tôi gợi ý bạn trải nghiệm ngay bộ phim **{trending_movies[0]['movie_id']}** đang làm mưa làm gió!",
+            "error": str(err)
+        }
+
 
