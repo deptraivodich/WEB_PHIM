@@ -11,7 +11,9 @@ from pydantic import BaseModel, Field
 import clickhouse_connect
 import re
 import urllib.request
+import urllib.parse
 import json
+import httpx
 try:
     import google.generativeai as genai
 except ImportError:
@@ -224,107 +226,216 @@ def get_trending_movies(limit: int = 10):
 
 # -------------------------------------------------------------------
 # Movie Crawler API Endpoint (PhimAPI -> TSV format for Magic Import)
+# Hỗ trợ cào cả 1 Phim lẻ hoặc CẢ MỘT TRANG DANH SÁCH (Đa luồng Async)
 # -------------------------------------------------------------------
 class CrawlRequest(BaseModel):
     url: str
 
-PHIM_API_BASE_URL = os.getenv("PHIM_API_BASE_URL", "https://phimapi.com/phim")
+PHIM_API_SINGLE_BASE = os.getenv("PHIM_API_BASE_URL", "https://phimapi.com/phim")
+PHIM_API_LIST_BASE = "https://phimapi.com/v1/api"
+DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+
+def classify_crawl_url(input_url: str):
+    """
+    Phân loại URL đầu vào thành ('single', slug) hoặc ('list', api_url)
+    """
+    raw_url = input_url.strip()
+    parsed = urllib.parse.urlparse(raw_url)
+    path = parsed.path.rstrip('/')
+    query = parsed.query
+
+    # 1. URL Phim lẻ: Có dạng /phim/slug (ví dụ: https://phimapi.com/phim/cuoc-chien-bang-dang)
+    if '/phim/' in path:
+        slug = path.split('/phim/')[-1].split('/')[0]
+        return ('single', slug)
+
+    # 2. Direct API List URL từ phimapi.com
+    if 'phimapi.com/v1/api/' in raw_url:
+        return ('list', raw_url)
+
+    # 3. URL Web Danh sách (/danh-sach/..., /quoc-gia/..., /the-loai/...)
+    if '/danh-sach/' in path:
+        cat_slug = path.split('/danh-sach/')[-1].split('/')[0]
+        api_url = f"{PHIM_API_LIST_BASE}/danh-sach/{cat_slug}"
+        if query:
+            api_url += f"?{query}"
+        return ('list', api_url)
+
+    if '/quoc-gia/' in path:
+        country_slug = path.split('/quoc-gia/')[-1].split('/')[0]
+        api_url = f"{PHIM_API_LIST_BASE}/quoc-gia/{country_slug}"
+        if query:
+            api_url += f"?{query}"
+        return ('list', api_url)
+
+    if '/the-loai/' in path:
+        genre_slug = path.split('/the-loai/')[-1].split('/')[0]
+        api_url = f"{PHIM_API_LIST_BASE}/the-loai/{genre_slug}"
+        if query:
+            api_url += f"?{query}"
+        return ('list', api_url)
+
+    # Fallback 1: Nếu là slug trực tiếp (không chứa slash hoặc query), coi là phim lẻ
+    last_seg = path.split('/')[-1] if path else raw_url
+    if last_seg and not query and 'danh-sach' not in last_seg and 'page=' not in raw_url:
+        return ('single', last_seg)
+
+    # Fallback 2: Nếu có query như ?page=2
+    if last_seg:
+        api_url = f"{PHIM_API_LIST_BASE}/danh-sach/{last_seg}"
+        if query:
+            api_url += f"?{query}"
+        return ('list', api_url)
+
+    return ('single', raw_url)
+
+
+async def fetch_movie_detail(client: httpx.AsyncClient, slug: str) -> Optional[dict]:
+    """
+    Gọi API lấy chi tiết 1 phim bất đồng bộ. Bao bọc try/catch để 1 phim lỗi không làm chết cả list!
+    """
+    url = f"{PHIM_API_SINGLE_BASE.rstrip('/')}/{slug}"
+    try:
+        res = await client.get(url, timeout=12.0)
+        if res.status_code == 200:
+            data = res.json()
+            if data and data.get('status'):
+                return data
+    except Exception as e:
+        logger.warning(f"⚠️ Lỗi khi cào phim '{slug}': {e}")
+    return None
+
+
+def convert_movie_data_to_tsv_rows(data: dict) -> List[str]:
+    """
+    Format dữ liệu JSON của 1 bộ phim thành các dòng dữ liệu TSV (không bao gồm Header).
+    Cột Thể Loại luôn để trống cho mọi dòng.
+    """
+    if not data or not data.get('status'):
+        return []
+
+    movie = data.get('movie', {})
+    title = movie.get('name', '')
+    original_title = movie.get('origin_name', '')
+    year = str(movie.get('year', '2026'))
+
+    # Xử lý Ảnh bìa
+    poster_url = movie.get('thumb_url', '') or movie.get('poster_url', '')
+    if poster_url and not poster_url.startswith('http'):
+        poster_url = f"https://phimimg.com/{poster_url}"
+
+    # Xử lý điểm IMDb / TMDB
+    imdb_data = movie.get('imdb', {}) or {}
+    tmdb_data = movie.get('tmdb', {}) or {}
+    raw_score = imdb_data.get('vote_average') or tmdb_data.get('vote_average')
+    imdb = f"{raw_score} /10" if raw_score else ""
+
+    episodes_data = data.get('episodes', [])
+    if not episodes_data:
+        return []
+
+    server_data = episodes_data[0].get('server_data', [])
+    if not server_data:
+        return []
+
+    rows = []
+    for index, ep in enumerate(server_data):
+        raw_ep_name = ep.get('name', str(index + 1))
+        ep_url = ep.get('link_m3u8', '') or ep.get('link_embed', '')
+
+        # Chuẩn hóa số tập (bỏ chữ hoặc số 0 thừa nếu có)
+        match = re.search(r'\d+', str(raw_ep_name))
+        if match:
+            ep_num = str(int(match.group()))
+        else:
+            ep_num = str(raw_ep_name)
+
+        # Dòng 1 (Tập 1): Full metadata, Cột Thể Loại luôn để trống
+        if index == 0:
+            row = [title, original_title, ep_num, ep_url, poster_url, imdb, year, ""]
+        else:
+            # Các tập sau: Bỏ trống metadata, Cột Thể Loại cũng để trống
+            row = ["", "", ep_num, ep_url, "", "", "", ""]
+
+        rows.append("\t".join(row))
+
+    return rows
+
 
 @app.post("/api/crawl")
 @app.get("/api/crawl")
 async def crawl_movie_api(request: Optional[CrawlRequest] = None, url: Optional[str] = None):
     """
-    Trích xuất dữ liệu phim từ PhimAPI qua URL hoặc Slug, trả về chuỗi String định dạng TSV.
+    API Cào dữ liệu Phim Đa Luồng (Bất đồng bộ asyncio.gather / httpx):
+    - Nhận vào URL Phim lẻ HOẶC URL Cả Trang Danh Sách.
+    - Xuất ra chuỗi TSV duy nhất nối dữ liệu của TẤT CẢ các phim cào được.
     """
     target_url = (request.url if request else url) or ""
     target_url = target_url.strip()
 
     if not target_url:
-        raise HTTPException(status_code=400, detail="Vui lòng cung cấp URL hoặc Slug phim!")
+        raise HTTPException(status_code=400, detail="Vui lòng cung cấp URL hoặc Slug phim/trang danh sách!")
 
-    # 1. Trích xuất ID (slug) của phim từ URL
-    slug = target_url.rstrip('/').split('/')[-1]
+    url_type, param = classify_crawl_url(target_url)
+    logger.info(f"🌐 Crawl Request - Phân loại URL: [{url_type}] | Param: {param}")
 
-    # API Base URL từ biến môi trường
-    api_url = f"{PHIM_API_BASE_URL.rstrip('/')}/{slug}"
+    headers = {"User-Agent": DEFAULT_USER_AGENT}
 
-    try:
-        logger.info(f"🌐 Đang gọi dữ liệu từ API: {api_url}")
-        req = urllib.request.Request(
-            api_url,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status != 200:
-                raise HTTPException(status_code=400, detail="Không thể kết nối API. Kiểm tra mạng hoặc URL!")
-            res_body = response.read().decode('utf-8')
-            data = json.loads(res_body)
+    async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
+        slugs_to_crawl = []
 
-        if not data.get('status'):
-            raise HTTPException(status_code=404, detail="API báo không tìm thấy phim này trong hệ thống!")
+        if url_type == 'single':
+            slugs_to_crawl = [param]
+        else:
+            # Gọi API danh sách của PhimAPI để lấy danh sách slug
+            try:
+                list_res = await client.get(param)
+                if list_res.status_code != 200:
+                    raise HTTPException(status_code=400, detail=f"Không thể tải trang danh sách API (HTTP {list_res.status_code})!")
+                
+                list_data = list_res.json()
+                items = list_data.get('data', {}).get('items', []) or list_data.get('items', [])
+                if not items:
+                    raise HTTPException(status_code=404, detail="Không tìm thấy phim nào trong trang danh sách này!")
+                
+                slugs_to_crawl = [item.get('slug') for item in items if item and item.get('slug')]
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"❌ Lỗi khi tải API trang danh sách: {e}")
+                raise HTTPException(status_code=500, detail=f"Lỗi khi đọc danh sách phim: {str(e)}")
 
-        movie = data.get('movie', {})
-        title = movie.get('name', '')
-        original_title = movie.get('origin_name', '')
-        year = str(movie.get('year', '2026'))
+        if not slugs_to_crawl:
+            raise HTTPException(status_code=404, detail="Danh sách slug phim rỗng!")
 
-        # Xử lý Ảnh bìa
-        poster_url = movie.get('thumb_url', '')
-        if poster_url and not poster_url.startswith('http'):
-            poster_url = f"https://phimimg.com/{poster_url}"
+        logger.info(f"⚡ Bắt đầu cào ĐA LUỒNG đồng thời cho {len(slugs_to_crawl)} phim...")
 
-        # Xử lý điểm IMDb / TMDB
-        imdb_data = movie.get('imdb', {}) or {}
-        tmdb_data = movie.get('tmdb', {}) or {}
-        raw_score = imdb_data.get('vote_average') or tmdb_data.get('vote_average')
+        # ĐA LUỒNG CONCURRENT FETCH VỚI asyncio.gather
+        movie_results = await asyncio.gather(*[fetch_movie_detail(client, slug) for slug in slugs_to_crawl])
 
-        imdb = f"{raw_score} /10" if raw_score else ""
+        # Lọc ra các phim cào thành công
+        successful_movies = [m for m in movie_results if m is not None]
+        if not successful_movies:
+            raise HTTPException(status_code=404, detail="Tất cả các phim trong danh sách đều không cào được dữ liệu!")
 
-        episodes_data = data.get('episodes', [])
-        if not episodes_data:
-            raise HTTPException(status_code=400, detail="Phim chưa cập nhật tập nào!")
+        # Chuẩn bị Header TSV
+        tsv_headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"]
+        all_tsv_lines = ["\t".join(tsv_headers)]
 
-        server_data = episodes_data[0].get('server_data', [])
-        if not server_data:
-            raise HTTPException(status_code=400, detail="Danh sách tập phim rỗng!")
+        for m_data in successful_movies:
+            m_rows = convert_movie_data_to_tsv_rows(m_data)
+            all_tsv_lines.extend(m_rows)
 
-        # Chuẩn bị dữ liệu TSV chuẩn Magic Import
-        headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"]
-        tsv_lines = ["\t".join(headers)]
+        final_tsv = "\n".join(all_tsv_lines)
 
-        for index, ep in enumerate(server_data):
-            raw_ep_name = ep.get('name', str(index + 1))
-            ep_url = ep.get('link_m3u8', '')
-
-            # Chuẩn hóa số tập (bỏ số 0 ở đầu nếu có)
-            match = re.search(r'\d+', raw_ep_name)
-            if match:
-                ep_num = str(int(match.group()))
-            else:
-                ep_num = raw_ep_name
-
-            # Dòng đầu tiên (Tập 1): Full metadata
-            if index == 0:
-                row = [title, original_title, ep_num, ep_url, poster_url, imdb, year, ""]
-            # Các tập sau: Bỏ trống metadata
-            else:
-                row = ["", "", ep_num, ep_url, "", "", "", ""]
-
-            tsv_lines.append("\t".join(row))
-
-        tsv_result = "\n".join(tsv_lines)
         return {
             "status": True,
-            "message": f"Cào dữ liệu thành công cho phim: {title}",
-            "slug": slug,
-            "episodes_count": len(server_data),
-            "tsv": tsv_result
+            "message": f"Cào thành công {len(successful_movies)}/{len(slugs_to_crawl)} bộ phim!",
+            "crawled_count": len(successful_movies),
+            "total_requested": len(slugs_to_crawl),
+            "tsv": final_tsv
         }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Lỗi bất ngờ khi cào phim: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi máy chủ khi cào phim: {str(e)}")
 
 
 # -------------------------------------------------------------------
@@ -379,7 +490,6 @@ async def cine_smart_ai_chat(payload: ChatRequest):
     # Danh sách dự phòng nếu ClickHouse chưa có đủ dữ liệu telemetry
     if not trending_movies:
         trending_movies = [
-            {"movie_id": "Dune: Hành Tinh Cát 2", "trending_score": 98.5},
             {"movie_id": "Demon Slayer: Hashira Training Arc", "trending_score": 95.0},
             {"movie_id": "Thất Nghiệp Chuyển Sinh Phần 3", "trending_score": 92.3},
             {"movie_id": "Solo Leveling", "trending_score": 89.1},

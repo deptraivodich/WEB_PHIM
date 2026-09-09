@@ -40,7 +40,7 @@ services:
       CLICKHOUSE_PASSWORD: default_password
       BATCH_SIZE: 50
       FLUSH_INTERVAL_SECONDS: 5
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_API_KEY: AQ.Ab8RN6K1oxnnbhunF2a5DHUMMaOIW7YNgL5Ha_-DJFysSXDPpw
 
     ports:
       - "8000:8000"
