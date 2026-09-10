@@ -241,7 +241,7 @@ const MagicImport = () => {
             const title = movie.name || '';
             const originalTitle = movie.origin_name || '';
             const year = String(movie.year || '2026');
-            let posterUrl = movie.thumb_url || movie.poster_url || '';
+            let posterUrl = movie.poster_url || movie.thumb_url || '';
             if (posterUrl && !posterUrl.startsWith('http')) posterUrl = `https://phimimg.com/${posterUrl}`;
             const rawScore = movie.imdb?.vote_average || movie.tmdb?.vote_average;
             const imdb = rawScore ? `${rawScore} /10` : '';
@@ -276,7 +276,7 @@ const MagicImport = () => {
           const title = movie.name || '';
           const originalTitle = movie.origin_name || '';
           const year = String(movie.year || '2026');
-          let posterUrl = movie.thumb_url || movie.poster_url || '';
+          let posterUrl = movie.poster_url || movie.thumb_url || '';
           if (posterUrl && !posterUrl.startsWith('http')) posterUrl = `https://phimimg.com/${posterUrl}`;
           const rawScore = movie.imdb?.vote_average || movie.tmdb?.vote_average;
           const imdb = rawScore ? `${rawScore} /10` : '';

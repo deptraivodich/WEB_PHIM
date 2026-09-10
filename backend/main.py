@@ -320,8 +320,8 @@ def convert_movie_data_to_tsv_rows(data: dict) -> List[str]:
     original_title = movie.get('origin_name', '')
     year = str(movie.get('year', '2026'))
 
-    # Xử lý Ảnh bìa
-    poster_url = movie.get('thumb_url', '') or movie.get('poster_url', '')
+    # Xử lý Ảnh bìa (Ưu tiên poster_url - ảnh dọc, fallback về thumb_url - ảnh ngang)
+    poster_url = movie.get('poster_url', '') or movie.get('thumb_url', '')
     if poster_url and not poster_url.startswith('http'):
         poster_url = f"https://phimimg.com/{poster_url}"
 
