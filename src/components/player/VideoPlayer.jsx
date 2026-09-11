@@ -59,7 +59,7 @@ const VideoPlayer = forwardRef(({
 
     // Clean up previous instances if re-rendering
     if (artInstanceRef.current) {
-      artInstanceRef.current.destroy(false);
+      artInstanceRef.current.destroy(true);
     }
     if (hlsInstanceRef.current) {
       hlsInstanceRef.current.destroy();
@@ -80,7 +80,7 @@ const VideoPlayer = forwardRef(({
       autoplay: autoPlay,
       pip: true,
       autoSize: false,
-      autoMini: true,
+      autoMini: false,
       screenshot: true,
       setting: true,
       loop: false,
@@ -248,7 +248,7 @@ const VideoPlayer = forwardRef(({
 
     return () => {
       if (artInstanceRef.current && artInstanceRef.current.destroy) {
-        artInstanceRef.current.destroy(false);
+        artInstanceRef.current.destroy(true);
       }
       if (hlsInstanceRef.current) {
         hlsInstanceRef.current.destroy();
