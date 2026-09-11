@@ -331,6 +331,15 @@ def convert_movie_data_to_tsv_rows(data: dict) -> List[str]:
     raw_score = imdb_data.get('vote_average') or tmdb_data.get('vote_average')
     imdb = f"{raw_score} /10" if raw_score else ""
 
+    # Xử lý Quốc Gia
+    country_data = movie.get('country', [])
+    if isinstance(country_data, list):
+        country_str = ", ".join([c.get('name', '') for c in country_data if isinstance(c, dict) and c.get('name')])
+    elif isinstance(country_data, dict):
+        country_str = country_data.get('name', '')
+    else:
+        country_str = str(country_data or '')
+
     episodes_data = data.get('episodes', [])
     if not episodes_data:
         return []
@@ -351,12 +360,12 @@ def convert_movie_data_to_tsv_rows(data: dict) -> List[str]:
         else:
             ep_num = str(raw_ep_name)
 
-        # Dòng 1 (Tập 1): Full metadata, Cột Thể Loại luôn để trống
+        # Dòng 1 (Tập 1): Full metadata, Cột kế cuối: Quốc Gia, Cột cuối: Thể Loại (để trống)
         if index == 0:
-            row = [title, original_title, ep_num, ep_url, poster_url, imdb, year, ""]
+            row = [title, original_title, ep_num, ep_url, poster_url, imdb, year, country_str, ""]
         else:
-            # Các tập sau: Bỏ trống metadata, Cột Thể Loại cũng để trống
-            row = ["", "", ep_num, ep_url, "", "", "", ""]
+            # Các tập sau: Bỏ trống metadata
+            row = ["", "", ep_num, ep_url, "", "", "", "", ""]
 
         rows.append("\t".join(row))
 
@@ -419,8 +428,8 @@ async def crawl_movie_api(request: Optional[CrawlRequest] = None, url: Optional[
         if not successful_movies:
             raise HTTPException(status_code=404, detail="Tất cả các phim trong danh sách đều không cào được dữ liệu!")
 
-        # Chuẩn bị Header TSV
-        tsv_headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"]
+        # Chuẩn bị Header TSV (Quốc Gia kế cuối, Thể Loại ở cuối)
+        tsv_headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Quốc Gia", "Thể Loại"]
         all_tsv_lines = ["\t".join(tsv_headers)]
 
         for m_data in successful_movies:

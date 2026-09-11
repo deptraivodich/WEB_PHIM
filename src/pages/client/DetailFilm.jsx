@@ -158,6 +158,7 @@ const DetailFilm = () => {
     badge = 'Vietsub + Thuyết Minh',
     director = 'Đang cập nhật',
     actors = 'Đang cập nhật',
+    country = 'Nhật Bản',
     genres = ['Hành động', 'Viễn tưởng'],
     description = 'Tóm tắt nội dung phim đang được cập nhật.',
     episodes = []
@@ -236,6 +237,11 @@ const DetailFilm = () => {
                   <span className="px-2.5 py-1 rounded-lg bg-white/10 text-gray-200 border border-white/10">
                     {year}
                   </span>
+                  {country && (
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold">
+                      🌐 {country}
+                    </span>
+                  )}
                   <span className="px-2.5 py-1 rounded-lg bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/30">
                     {duration}
                   </span>
@@ -262,8 +268,9 @@ const DetailFilm = () => {
                   {description}
                 </p>
 
-                {/* Director & Cast */}
+                {/* Country, Director & Cast */}
                 <div className="text-xs text-gray-400 space-y-1 pt-1">
+                  <p><strong className="text-gray-200">Quốc gia:</strong> <span className="text-emerald-400 font-semibold">{country}</span></p>
                   <p><strong className="text-gray-200">Đạo diễn:</strong> {director}</p>
                   <p><strong className="text-gray-200">Diễn viên:</strong> {actors}</p>
                 </div>

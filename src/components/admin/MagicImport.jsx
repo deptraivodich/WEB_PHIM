@@ -233,7 +233,7 @@ const MagicImport = () => {
           if (!movieResults.length) throw new Error('Tất cả các phim trong danh sách đều không cào được!');
 
           crawledCount = movieResults.length;
-          const headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"];
+          const headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Quốc Gia", "Thể Loại"];
           const lines = [headers.join('\t')];
 
           movieResults.forEach(data => {
@@ -246,6 +246,16 @@ const MagicImport = () => {
             const rawScore = movie.imdb?.vote_average || movie.tmdb?.vote_average;
             const imdb = rawScore ? `${rawScore} /10` : '';
 
+            const countryData = movie.country;
+            let countryStr = '';
+            if (Array.isArray(countryData)) {
+              countryStr = countryData.map(c => c?.name || c).filter(Boolean).join(', ');
+            } else if (countryData && typeof countryData === 'object') {
+              countryStr = countryData.name || '';
+            } else {
+              countryStr = String(countryData || '');
+            }
+
             const serverData = data.episodes?.[0]?.server_data || [];
             serverData.forEach((ep, index) => {
               const rawEpName = ep.name || String(index + 1);
@@ -254,9 +264,9 @@ const MagicImport = () => {
               const epNum = match ? String(parseInt(match[0], 10)) : String(rawEpName);
 
               if (index === 0) {
-                lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, ''].join('\t'));
+                lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, countryStr, ''].join('\t'));
               } else {
-                lines.push(['', '', epNum, epUrl, '', '', '', ''].join('\t'));
+                lines.push(['', '', epNum, epUrl, '', '', '', '', ''].join('\t'));
               }
             });
           });
@@ -281,10 +291,20 @@ const MagicImport = () => {
           const rawScore = movie.imdb?.vote_average || movie.tmdb?.vote_average;
           const imdb = rawScore ? `${rawScore} /10` : '';
 
+          const countryData = movie.country;
+          let countryStr = '';
+          if (Array.isArray(countryData)) {
+            countryStr = countryData.map(c => c?.name || c).filter(Boolean).join(', ');
+          } else if (countryData && typeof countryData === 'object') {
+            countryStr = countryData.name || '';
+          } else {
+            countryStr = String(countryData || '');
+          }
+
           const serverData = data.episodes?.[0]?.server_data || [];
           if (!serverData.length) throw new Error('Không tìm thấy danh sách tập phim!');
 
-          const headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"];
+          const headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Quốc Gia", "Thể Loại"];
           const lines = [headers.join('\t')];
 
           serverData.forEach((ep, index) => {
@@ -294,9 +314,9 @@ const MagicImport = () => {
             const epNum = match ? String(parseInt(match[0], 10)) : String(rawEpName);
 
             if (index === 0) {
-              lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, ''].join('\t'));
+              lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, countryStr, ''].join('\t'));
             } else {
-              lines.push(['', '', epNum, epUrl, '', '', '', ''].join('\t'));
+              lines.push(['', '', epNum, epUrl, '', '', '', '', ''].join('\t'));
             }
           });
 
@@ -394,14 +414,28 @@ const MagicImport = () => {
           ? match.episodes 
           : [{ name: '1', url: match.m3u8Url || '' }];
 
+        const incomingCountry = String(movie.country || '').trim();
+        const existingCountry = String(match.country || '').trim();
+        const hasCountryUpdate = Boolean(incomingCountry && incomingCountry !== existingCountry);
+
         // Trích xuất CHỈ NHỮNG TẬP MỚI
         const newEpsOnly = findNewEpisodesOnly(existingEps, movie.episodes || []);
+        const hasNewEpisodes = newEpsOnly.length > 0;
         const merged = mergeEpisodesList(existingEps, movie.episodes || []);
 
-        if (newEpsOnly.length > 0) {
+        if (hasNewEpisodes || hasCountryUpdate) {
           // -------------------------------------------------------------------
-          // KỊCH BẢN 2: PHIM ĐÃ CÓ TRONG DB VÀ CÓ TẬP MỚI -> status = 'update'
+          // KỊCH BẢN 2: PHIM ĐÃ CÓ TRONG DB, CÓ TẬP MỚI HOẶC CÓ QUỐC GIA MỚI -> status = 'update'
           // -------------------------------------------------------------------
+          let updateReasonText = '🔄 Tự Động Gộp Phim';
+          if (hasNewEpisodes && hasCountryUpdate) {
+            updateReasonText = `🔄 Gộp +${newEpsOnly.length} Tập & Quốc gia (${incomingCountry})`;
+          } else if (hasNewEpisodes) {
+            updateReasonText = `🔄 Tự Động Gộp (+${newEpsOnly.length} Tập Mới)`;
+          } else if (hasCountryUpdate) {
+            updateReasonText = `🌐 Bổ sung Quốc gia (${incomingCountry})`;
+          }
+
           return {
             ...movie,
             title: formattedTitle,
@@ -409,6 +443,10 @@ const MagicImport = () => {
             isExistingMatch: true,
             matchedMovieId: match.id,
             matchedMovieTitle: match.title,
+            hasNewEpisodes,
+            hasCountryUpdate,
+            updateReasonText,
+            country: incomingCountry || existingCountry,
             newEpisodes: newEpsOnly,
             newEpisodesCount: newEpsOnly.length,
             existingEpisodesCount: existingEps.length,
@@ -417,7 +455,7 @@ const MagicImport = () => {
           };
         } else {
           // -------------------------------------------------------------------
-          // KỊCH BẢN 3: PHIM ĐÃ CÓ TRONG DB VÀ KHÔNG CÓ TẬP NÀO MỚI -> status = 'duplicate'
+          // KỊCH BẢN 3: PHIM ĐÃ CÓ TRONG DB, KHÔNG CÓ TẬP MỚI & KHÔNG ĐỔI QUỐC GIA -> status = 'duplicate'
           // -------------------------------------------------------------------
           return {
             ...movie,
@@ -426,6 +464,9 @@ const MagicImport = () => {
             isExistingMatch: true,
             matchedMovieId: match.id,
             matchedMovieTitle: match.title,
+            hasNewEpisodes: false,
+            hasCountryUpdate: false,
+            country: existingCountry || incomingCountry,
             newEpisodes: [],
             newEpisodesCount: 0,
             existingEpisodesCount: existingEps.length,
@@ -502,7 +543,7 @@ const MagicImport = () => {
           const finalEpisodes = mergedEpisodes || cleanMovie.episodes || [];
 
           if (status === 'update' && matchedMovieId) {
-            // KỊCH BẢN 2: CẬP NHẬT GỘP TẬP MỚI VÀO PHIM CŨ
+            // KỊCH BẢN 2: CẬP NHẬT GỘP TẬP MỚI HOẶC QUỐC GIA VÀO PHIM CŨ
             totalMerged++;
             const movieRef = doc(db, 'movies', matchedMovieId);
             const updatePayload = sanitizeFirestoreData({
@@ -512,6 +553,7 @@ const MagicImport = () => {
               episodes: finalEpisodes,
               episodesCount: `${finalEpisodes.length} Tập`,
               episodesStatus: `Tập hoàn tất (${finalEpisodes.length}/${finalEpisodes.length})`,
+              country: movie.country || cleanMovie.country || '',
               m3u8Url: finalEpisodes[0]?.url || cleanMovie.m3u8Url || '',
               updatedAt: new Date().toISOString()
             });
@@ -886,6 +928,7 @@ const MagicImport = () => {
                   <th className="p-3">Tổng Tập Sau Gộp</th>
                   <th className="p-3">Link Video Tập Đầu</th>
                   <th className="p-3">Năm</th>
+                  <th className="p-3">Quốc Gia</th>
                   <th className="p-3">IMDb</th>
                 </tr>
               </thead>
@@ -920,10 +963,10 @@ const MagicImport = () => {
                       {movie.status === 'update' && (
                         <div className="space-y-0.5">
                           <span className="px-2.5 py-1 rounded-lg text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-bold inline-flex items-center gap-1">
-                            🔄 Tự Động Gộp (+{movie.newEpisodesCount} Tập Mới)
+                            {movie.updateReasonText || `🔄 Tự Động Gộp (+${movie.newEpisodesCount} Tập Mới)`}
                           </span>
-                          <p className="text-[10px] text-gray-400 truncate max-w-[150px]">
-                            Đã có sẵn {movie.existingEpisodesCount} tập
+                          <p className="text-[10px] text-gray-400 truncate max-w-[170px]">
+                            {movie.hasNewEpisodes ? `Đã có sẵn ${movie.existingEpisodesCount} tập` : `Cập nhật Quốc gia: ${movie.country}`}
                           </p>
                         </div>
                       )}
@@ -983,6 +1026,7 @@ const MagicImport = () => {
 
                     <td className="p-3 font-mono text-neon-cyan max-w-[180px] truncate">{movie.m3u8Url}</td>
                     <td className="p-3">{movie.year}</td>
+                    <td className="p-3 font-semibold text-emerald-300">{movie.country || 'N/A'}</td>
                     <td className="p-3 text-yellow-400 font-bold">★ {movie.imdb}</td>
                   </tr>
                 ))}
