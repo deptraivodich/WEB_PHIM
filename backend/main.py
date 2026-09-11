@@ -322,7 +322,7 @@ def convert_movie_data_to_tsv_rows(data: dict) -> List[str]:
 
     # Xử lý Ảnh bìa (Ưu tiên poster_url - ảnh dọc, fallback về thumb_url - ảnh ngang)
     poster_url = movie.get('poster_url', '') or movie.get('thumb_url', '')
-    if poster_url and not poster_url.startswith('http'):
+    if poster_url and not poster_url.startswith('http'): #ảnh poster
         poster_url = f"https://phimimg.com/{poster_url}"
 
     # Xử lý điểm IMDb / TMDB
