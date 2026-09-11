@@ -66,6 +66,21 @@ const WatchPage = () => {
   const currentEpName = activeEpisodeObj?.name || activeEpisodeObj?.number || activeEpisodeState;
   const formattedTitle = formatVietnameseSentenceCase(currentMovie?.title || 'Phim mới');
 
+  // Episode Pagination / Chunking (Max 100 episodes per range tab)
+  const CHUNK_SIZE = 100;
+  const totalEpisodesCount = episodes.length;
+  const chunkCount = Math.ceil(totalEpisodesCount / CHUNK_SIZE);
+  const activeEpIndex = episodes.findIndex(ep => String(ep.name || ep.number) === String(currentEpName));
+  const activeChunkIndex = activeEpIndex >= 0 ? Math.floor(activeEpIndex / CHUNK_SIZE) : 0;
+
+  const [selectedRangeIndex, setSelectedRangeIndex] = useState(activeChunkIndex);
+
+  useEffect(() => {
+    if (activeEpIndex >= 0) {
+      setSelectedRangeIndex(Math.floor(activeEpIndex / CHUNK_SIZE));
+    }
+  }, [activeEpIndex, currentMovie?.id]);
+
   // Check saved progress and show resume dialog if user previously stopped mid-video
   useEffect(() => {
     if (currentUser?.username && id) {
@@ -301,41 +316,70 @@ const WatchPage = () => {
           </div>
         </div>
 
-        {/* Episodes Selection Grid Component in Watch Page */}
+        {/* Episodes Selection Grid Component in Watch Page with Range Tabs (Max 100 per range) */}
         <div className="p-6 rounded-2xl glass-panel space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <span className="w-1.5 h-4 bg-amber-400 rounded-full"></span>
+              <span className="w-1.5 h-4 bg-red-600 rounded-full"></span>
               <span>Danh Sách Chọn Tập Phim</span>
-              <span className="text-xs text-amber-400 font-extrabold px-2 py-0.5 rounded-full bg-amber-400/15 border border-amber-400/30">
+              <span className="text-xs text-amber-400 font-extrabold px-2.5 py-0.5 rounded-full bg-amber-400/15 border border-amber-400/30">
                 {episodes.length} Tập
               </span>
             </h3>
             <span className="text-xs text-neon-cyan font-semibold">Click tập bất kỳ để chuyển luồng phát ngay lập tức</span>
           </div>
 
-          <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-12 gap-2.5">
-            {episodes.map((ep, idx) => {
-              const epNum = ep.name || ep.number || (idx + 1);
-              const isActive = String(epNum) === String(currentEpName);
-              const formattedEpNumber = String(epNum).padStart(2, '0');
+          {/* Episode Range Selector Tabs (Show if > 100 episodes) */}
+          {chunkCount > 1 && (
+            <div className="flex flex-wrap gap-2.5 pt-2 pb-3 border-b border-white/10">
+              {Array.from({ length: chunkCount }).map((_, chunkIdx) => {
+                const startEp = chunkIdx * CHUNK_SIZE + 1;
+                const endEp = Math.min(totalEpisodesCount, (chunkIdx + 1) * CHUNK_SIZE);
+                const isSelectedRange = selectedRangeIndex === chunkIdx;
 
-              return (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => handleSelectEpisode(epNum)}
-                  className={`py-3 px-2 rounded-xl text-center text-xs font-bold transition-all border cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
-                    isActive
-                      ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-black border-amber-400 shadow-[0_0_15px_rgba(245,158,11,0.6)] scale-105 font-black'
-                      : 'bg-surface/80 text-gray-300 hover:text-white border-white/10 hover:border-amber-400/50 hover:bg-white/10'
-                  }`}
-                >
-                  <span className="text-[10px] opacity-75 font-normal">Tập</span>
-                  <span className="text-sm font-black">{formattedEpNumber}</span>
-                </button>
-              );
-            })}
+                return (
+                  <button
+                    key={chunkIdx}
+                    type="button"
+                    onClick={() => setSelectedRangeIndex(chunkIdx)}
+                    className={`px-4 py-2 rounded-xl text-xs font-black transition-all border cursor-pointer ${
+                      isSelectedRange
+                        ? 'bg-red-600 text-white border-red-500 shadow-[0_0_15px_rgba(225,29,72,0.6)] scale-105'
+                        : 'bg-surface/80 text-gray-300 hover:text-white border-white/10 hover:border-white/30 hover:bg-white/10'
+                    }`}
+                  >
+                    {startEp} - {endEp}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Episode Grid for Selected Range */}
+          <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 gap-2.5">
+            {episodes
+              .slice(selectedRangeIndex * CHUNK_SIZE, (selectedRangeIndex + 1) * CHUNK_SIZE)
+              .map((ep, idxInChunk) => {
+                const globalIndex = selectedRangeIndex * CHUNK_SIZE + idxInChunk;
+                const epNum = ep.name || ep.number || (globalIndex + 1);
+                const isActive = String(epNum) === String(currentEpName);
+
+                return (
+                  <button
+                    key={globalIndex}
+                    type="button"
+                    onClick={() => handleSelectEpisode(epNum)}
+                    className={`py-3 px-2 rounded-xl text-center text-xs font-bold transition-all border cursor-pointer flex flex-col items-center justify-center gap-0.5 ${
+                      isActive
+                        ? 'bg-red-600 text-white border-red-500 shadow-[0_0_15px_rgba(225,29,72,0.6)] scale-105 font-black'
+                        : 'bg-surface/80 text-gray-300 hover:text-white border-white/10 hover:border-red-500/50 hover:bg-white/10'
+                    }`}
+                  >
+                    <span className="text-[10px] opacity-75 font-normal">Tập</span>
+                    <span className="text-sm font-black">{epNum}</span>
+                  </button>
+                );
+              })}
           </div>
         </div>
       </main>

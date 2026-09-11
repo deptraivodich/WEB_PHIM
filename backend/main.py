@@ -32,7 +32,7 @@ CLICKHOUSE_DB = os.getenv("CLICKHOUSE_DB", "web_phim")
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "default")
 CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "default_password")
 
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "1"))
 FLUSH_INTERVAL_SECONDS = int(os.getenv("FLUSH_INTERVAL_SECONDS", "5"))
 
 # Global State
@@ -70,16 +70,34 @@ async def flush_buffer():
 
     if clickhouse_client:
         try:
+            # Convert string timestamps to native python datetime objects before inserting
+            formatted_events = []
+            for row in events_to_insert:
+                new_row = list(row)
+                created_at_val = new_row[8]
+                if isinstance(created_at_val, str):
+                    try:
+                        created_at_val = datetime.fromisoformat(created_at_val.replace('Z', '+00:00'))
+                    except ValueError:
+                        try:
+                            created_at_val = datetime.strptime(created_at_val, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            created_at_val = datetime.utcnow()
+                elif not isinstance(created_at_val, datetime):
+                    created_at_val = datetime.utcnow()
+                new_row[8] = created_at_val
+                formatted_events.append(new_row)
+
             column_names = [
                 'user_id', 'session_id', 'movie_id', 'action_type', 
                 'watch_time', 'video_quality', 'device_type', 'ip_address', 'created_at'
             ]
             clickhouse_client.insert(
                 table='user_telemetry_events',
-                data=events_to_insert,
+                data=formatted_events,
                 column_names=column_names
             )
-            logger.info(f"Successfully bulk inserted {len(events_to_insert)} telemetry events to ClickHouse.")
+            logger.info(f"Successfully bulk inserted {len(formatted_events)} telemetry events to ClickHouse.")
         except Exception as e:
             logger.error(f"Error bulk inserting events to ClickHouse: {e}")
             # Re-queue on failure to prevent data loss
@@ -331,6 +349,15 @@ def convert_movie_data_to_tsv_rows(data: dict) -> List[str]:
     raw_score = imdb_data.get('vote_average') or tmdb_data.get('vote_average')
     imdb = f"{raw_score} /10" if raw_score else ""
 
+    # Xử lý Quốc Gia
+    country_data = movie.get('country', [])
+    if isinstance(country_data, list):
+        country_str = ", ".join([c.get('name', '') for c in country_data if isinstance(c, dict) and c.get('name')])
+    elif isinstance(country_data, dict):
+        country_str = country_data.get('name', '')
+    else:
+        country_str = str(country_data or '')
+
     episodes_data = data.get('episodes', [])
     if not episodes_data:
         return []
@@ -351,12 +378,12 @@ def convert_movie_data_to_tsv_rows(data: dict) -> List[str]:
         else:
             ep_num = str(raw_ep_name)
 
-        # Dòng 1 (Tập 1): Full metadata, Cột Thể Loại luôn để trống
+        # Dòng 1 (Tập 1): Full metadata, Cột kế cuối: Quốc Gia, Cột cuối: Thể Loại (để trống)
         if index == 0:
-            row = [title, original_title, ep_num, ep_url, poster_url, imdb, year, ""]
+            row = [title, original_title, ep_num, ep_url, poster_url, imdb, year, country_str, ""]
         else:
-            # Các tập sau: Bỏ trống metadata, Cột Thể Loại cũng để trống
-            row = ["", "", ep_num, ep_url, "", "", "", ""]
+            # Các tập sau: Bỏ trống metadata
+            row = ["", "", ep_num, ep_url, "", "", "", "", ""]
 
         rows.append("\t".join(row))
 
@@ -419,8 +446,8 @@ async def crawl_movie_api(request: Optional[CrawlRequest] = None, url: Optional[
         if not successful_movies:
             raise HTTPException(status_code=404, detail="Tất cả các phim trong danh sách đều không cào được dữ liệu!")
 
-        # Chuẩn bị Header TSV
-        tsv_headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Thể Loại"]
+        # Chuẩn bị Header TSV (Quốc Gia kế cuối, Thể Loại ở cuối)
+        tsv_headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Quốc Gia", "Thể Loại"]
         all_tsv_lines = ["\t".join(tsv_headers)]
 
         for m_data in successful_movies:
@@ -551,17 +578,17 @@ async def cine_smart_ai_chat(payload: ChatRequest):
 
 
 
-    # 3. Gửi System Prompt + Tin nhắn tới Gemini (gemini-1.5-flash)
+    # 3. Gửi System Prompt + Tin nhắn tới Gemini
     gemini_key = os.getenv("GEMINI_API_KEY", "")
 
-    if not gemini_key or genai is None:
-        logger.warning("GEMINI_API_KEY chưa được thiết lập hoặc thư viện google-generativeai chưa có.")
+    if not gemini_key:
+        logger.warning("GEMINI_API_KEY chưa được thiết lập.")
         # Phản hồi dự phòng thông minh khi chưa có API Key
         fallback_reply = (
             f"🎬 **Trợ lý CineSmart AI** (Chế độ offline):\n"
             f"Dưới đây là các phim đang **HOT nhất** trên hệ thống theo thống kê ClickHouse thời gian thực:\n"
             + "\n".join([f"• **{m['movie_id']}** (Độ HOT: {m['trending_score']})" for m in trending_movies[:5]])
-            + "\n\n*(Lưu ý: Hãy thiết lập `GEMINI_API_KEY` trong môi trường Docker để kích hoạt mô hình Gemini 1.5 Flash đầy đủ!)*"
+            + "\n\n*(Lưu ý: Hãy thiết lập `GEMINI_API_KEY` trong môi trường Docker để kích hoạt mô hình Gemini đầy đủ!)*"
         )
         return {
             "status": True,
@@ -570,24 +597,51 @@ async def cine_smart_ai_chat(payload: ChatRequest):
         }
 
     try:
-        genai.configure(api_key=gemini_key)
         full_prompt = f"{system_prompt}\n\nNgười dùng nhắn: {user_message}\nCineSmart AI trả lời:"
-        
-        candidate_models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-1.5-flash", "gemini-2.5-pro", "gemini-pro-latest"]
+        candidate_models = ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-pro", "gemini-pro-latest"]
 
         reply_text = None
         last_error = None
 
-        for model_name in candidate_models:
+        # 1. Thử gọi trực tiếp REST API qua httpx (hỗ trợ hoàn hảo API Key dạng AQ... không bị lỗi SDK Authorization 401)
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            for model_name in candidate_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
+                payload = {
+                    "contents": [{"parts": [{"text": full_prompt}]}]
+                }
+                try:
+                    res = await client.post(url, json=payload)
+                    if res.status_code == 200:
+                        data = res.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                reply_text = parts[0].get("text", "")
+                                break
+                    else:
+                        last_error = Exception(f"HTTP {res.status_code}: {res.text[:200]}")
+                except Exception as e:
+                    last_error = e
+                    continue
+
+        # 2. Fallback sang genai SDK nếu REST API chưa lấy được reply
+        if not reply_text and genai is not None:
             try:
-                model = genai.GenerativeModel(model_name)
-                res = model.generate_content(full_prompt)
-                if res and hasattr(res, 'text') and res.text:
-                    reply_text = res.text
-                    break
+                genai.configure(api_key=gemini_key)
+                for model_name in candidate_models:
+                    try:
+                        model = genai.GenerativeModel(model_name)
+                        res = model.generate_content(full_prompt)
+                        if res and hasattr(res, 'text') and res.text:
+                            reply_text = res.text
+                            break
+                    except Exception as e:
+                        last_error = e
+                        continue
             except Exception as e:
                 last_error = e
-                continue
 
         if not reply_text:
             if last_error:
@@ -601,7 +655,7 @@ async def cine_smart_ai_chat(payload: ChatRequest):
         }
 
     except Exception as err:
-        logger.error(f"Lỗi khi gọi Gemini 1.5 Flash API: {err}")
+        logger.error(f"Lỗi khi gọi Gemini API: {err}")
         return {
             "status": True,
             "reply": f"🤖 **Trợ lý CineSmart AI**: Rất tiếc có sự cố kết nối với Gemini API ({str(err)}). "

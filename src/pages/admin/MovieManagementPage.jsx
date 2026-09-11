@@ -195,6 +195,7 @@ const MovieManagementPage = () => {
   const initialFormState = {
     title: '',
     originalTitle: '',
+    country: 'Nhật Bản',
     m3u8Url: '',
     episodes: '1/1',
     quality: '4K UltraHD',
@@ -784,7 +785,7 @@ const MovieManagementPage = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-gray-300">Số Tập</label>
                   <input 
@@ -825,6 +826,17 @@ const MovieManagementPage = () => {
                     value={formData.year}
                     onChange={e => setFormData({ ...formData, year: e.target.value })}
                     className="w-full p-3 rounded-xl bg-surface border border-glass-border text-xs text-white"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-gray-300">Quốc Gia</label>
+                  <input 
+                    type="text"
+                    value={formData.country || ''}
+                    onChange={e => setFormData({ ...formData, country: e.target.value })}
+                    placeholder="VD: Nhật Bản, Mỹ"
+                    className="w-full p-3 rounded-xl bg-surface border border-glass-border text-xs text-white font-semibold text-emerald-400"
                   />
                 </div>
               </div>
@@ -1009,7 +1021,7 @@ const MovieManagementPage = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="text-gray-300">Điểm IMDb</label>
                   <input 
@@ -1035,6 +1047,16 @@ const MovieManagementPage = () => {
                     value={editingMovie.quality || ''} 
                     onChange={e => setEditingMovie({ ...editingMovie, quality: e.target.value })}
                     className="w-full p-2.5 rounded-lg bg-surface border border-glass-border text-white mt-1"
+                  />
+                </div>
+                <div>
+                  <label className="text-gray-300 font-semibold text-emerald-400">Quốc gia</label>
+                  <input 
+                    type="text" 
+                    placeholder="VD: Nhật Bản, Mỹ"
+                    value={editingMovie.country || ''} 
+                    onChange={e => setEditingMovie({ ...editingMovie, country: e.target.value })}
+                    className="w-full p-2.5 rounded-lg bg-surface border border-emerald-500/40 text-white font-semibold mt-1"
                   />
                 </div>
               </div>
