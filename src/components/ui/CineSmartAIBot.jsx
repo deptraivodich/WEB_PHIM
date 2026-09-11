@@ -69,15 +69,35 @@ const CineSmartAIBot = () => {
     setIsTyping(true);
 
     try {
-      // Lấy danh sách tên tất cả phim thực tế đang có trong kho dữ liệu Web
+      // Lấy danh sách tên tất cả phim thực tế đang có trong kho dữ liệu Web & bảng ánh xạ ID -> Title
       let availableMovies = [];
+      let movieMapping = {};
       try {
         const stored = getStoredMovies();
         if (Array.isArray(stored) && stored.length > 0) {
           availableMovies = stored.map(m => m.title).filter(Boolean);
+          stored.forEach(m => {
+            if (m.id && m.title) {
+              movieMapping[String(m.id)] = m.title;
+            }
+          });
         }
       } catch (e) {
         console.warn("Could not read stored movies for AI context:", e);
+      }
+
+      // Lấy username từ phiên đăng nhập hiện tại nếu có
+      let currentUserId = 'anonymous';
+      try {
+        const sessionRaw = localStorage.getItem('210loliphim_current_session');
+        if (sessionRaw) {
+          const sessionObj = JSON.parse(sessionRaw);
+          if (sessionObj?.username) {
+            currentUserId = sessionObj.username;
+          }
+        }
+      } catch (e) {
+        console.warn("Could not read current user session:", e);
       }
 
       const backendApiUrl = import.meta.env.VITE_CHAT_API_URL || 'http://localhost:8000/api/chat';
@@ -86,8 +106,9 @@ const CineSmartAIBot = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text.trim(),
-          user_id: 'anonymous',
-          available_movies: availableMovies
+          user_id: currentUserId,
+          available_movies: availableMovies,
+          movie_mapping: movieMapping
         })
       });
 

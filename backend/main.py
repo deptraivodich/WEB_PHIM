@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
@@ -445,16 +445,19 @@ class ChatRequest(BaseModel):
     message: str
     user_id: Optional[str] = "anonymous"
     available_movies: Optional[List[str]] = []
+    movie_mapping: Optional[Dict[str, str]] = {}
 
 @app.post("/api/chat")
 async def cine_smart_ai_chat(payload: ChatRequest):
     """
     Endpoint xử lý trò chuyện thông minh với CineSmart AI.
-    Tích hợp dữ liệu thời gian thực Top 10 Trending từ ClickHouse vào System Prompt của Gemini API.
+    Tích hợp dữ liệu thời gian thực Top 10 Trending từ ClickHouse và lọc Lịch sử xem phim theo thời gian xem (watch_time).
     """
     user_message = payload.message.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="Tin nhắn không được để trống!")
+
+    movie_map = payload.movie_mapping or {}
 
     # 1. Lấy danh sách Top 10 Trending từ ClickHouse theo thời gian thực
     trending_movies = []
@@ -479,8 +482,10 @@ async def cine_smart_ai_chat(payload: ChatRequest):
             """
             result = clickhouse_client.query(query)
             for row in result.result_rows:
+                raw_id = str(row[0])
+                title = movie_map.get(raw_id, raw_id)
                 trending_movies.append({
-                    "movie_id": str(row[0]),
+                    "movie_id": title,
                     "play_count": int(row[1]),
                     "trending_score": round(float(row[4]), 1)
                 })
@@ -496,73 +501,122 @@ async def cine_smart_ai_chat(payload: ChatRequest):
             {"movie_id": "Jujutsu Kaisen Season 2", "trending_score": 87.4}
         ]
 
-    trending_context = ", ".join([f"'{m['movie_id']}' (Điểm HOT: {m['trending_score']})" for m in trending_movies])
-
     # 2. Lấy danh sách tất cả các phim ĐANG CÓ THỰC TẾ trên hệ thống Web
     real_movies_list = payload.available_movies or [m['movie_id'] for m in trending_movies]
     real_movies_str = ", ".join([f"'{title}'" for title in real_movies_list[:35]])
 
-    # 3. Lấy phim mà người dùng xem nhiều nhất từ dữ liệu ClickHouse Telemetry
-    most_watched_movie = None
+    # Chuẩn hóa tên phim trong trending_movies: nếu movie_id là số thô (ví dụ "1"), thay bằng tên phim từ real_movies_list
+    for idx, tm in enumerate(trending_movies):
+        m_id = tm['movie_id']
+        if m_id.isdigit() or (payload.available_movies and m_id not in payload.available_movies):
+            if payload.available_movies and idx < len(payload.available_movies):
+                tm['movie_id'] = payload.available_movies[idx]
+
+    # 3. Phân tích Lịch sử xem phim từ ClickHouse Telemetry (Lọc phim xem đủ lâu vs Phim tua nhanh/thoát ngay)
+    valid_history_movies = []
+    ignored_history_movies = []
+
     if clickhouse_client:
         try:
-            if payload.user_id and payload.user_id != 'anonymous':
-                user_fav_query = """
-                    SELECT movie_id, sum(watch_time) AS total_seconds
-                    FROM web_phim.user_telemetry_events
-                    WHERE user_id = {user_id:String} AND movie_id != ''
-                    GROUP BY movie_id
-                    ORDER BY total_seconds DESC
-                    LIMIT 1
-                """
-                user_fav_res = clickhouse_client.query(user_fav_query, parameters={"user_id": payload.user_id})
-                if user_fav_res.result_rows:
-                    most_watched_movie = str(user_fav_res.result_rows[0][0])
+            user_id_param = payload.user_id.strip() if payload.user_id else 'anonymous'
+            if user_id_param != 'anonymous':
+                where_cond = "user_id = {user_id:String} AND movie_id != ''"
+                params = {"user_id": user_id_param}
+            else:
+                where_cond = "movie_id != ''"
+                params = {}
 
-            if not most_watched_movie:
-                top_fav_query = """
-                    SELECT movie_id, sum(watch_time) AS total_seconds
-                    FROM web_phim.user_telemetry_events
-                    WHERE movie_id != ''
-                    GROUP BY movie_id
-                    ORDER BY total_seconds DESC
-                    LIMIT 1
-                """
-                top_fav_res = clickhouse_client.query(top_fav_query)
-                if top_fav_res.result_rows:
-                    most_watched_movie = str(top_fav_res.result_rows[0][0])
+            # Query phim xem HỢP LỆ (thời gian xem tích lũy >= 30 giây)
+            user_valid_query = f"""
+                SELECT movie_id, sum(watch_time) AS total_seconds
+                FROM web_phim.user_telemetry_events
+                WHERE {where_cond}
+                GROUP BY movie_id
+                HAVING total_seconds >= 30
+                ORDER BY total_seconds DESC
+                LIMIT 5
+            """
+            valid_res = clickhouse_client.query(user_valid_query, parameters=params)
+            if valid_res.result_rows:
+                for row in valid_res.result_rows:
+                    m_id = str(row[0])
+                    m_title = movie_map.get(m_id, m_id)
+                    if m_id.isdigit() and payload.available_movies:
+                        m_title = payload.available_movies[0]
+                    valid_history_movies.append(m_title)
+
+            # Query phim BỊ LOẠI BỎ (vừa bấm vào đã tua nhanh / thoát ngay < 30 giây)
+            user_ignored_query = f"""
+                SELECT movie_id, sum(watch_time) AS total_seconds
+                FROM web_phim.user_telemetry_events
+                WHERE {where_cond}
+                GROUP BY movie_id
+                HAVING total_seconds < 30
+                ORDER BY total_seconds ASC
+                LIMIT 5
+            """
+            ignored_res = clickhouse_client.query(user_ignored_query, parameters=params)
+            if ignored_res.result_rows:
+                for row in ignored_res.result_rows:
+                    m_id = str(row[0])
+                    m_title = movie_map.get(m_id, m_id)
+                    if m_id.isdigit() and payload.available_movies:
+                        m_title = payload.available_movies[0]
+                    if m_title not in valid_history_movies:
+                        ignored_history_movies.append(m_title)
         except Exception as e:
-            logger.warning(f"Không thể truy vấn phim xem nhiều nhất từ ClickHouse: {e}")
+            logger.warning(f"Không thể truy vấn lịch sử xem phim từ ClickHouse: {e}")
 
-    if not most_watched_movie:
-        most_watched_movie = real_movies_list[0] if real_movies_list else "Thất Nghiệp Chuyển Sinh Phần 3"
+    valid_history_str = ", ".join([f"'{t}'" for t in valid_history_movies]) if valid_history_movies else "Chưa có (Chưa xem đủ lâu bộ phim nào)"
+    ignored_history_str = ", ".join([f"'{t}'" for t in ignored_history_movies]) if ignored_history_movies else "Không có"
 
-    # 4. Xây dựng System Prompt chống BỊP / CHỈ GỢI Ý PHIM CÓ TRONG KHO DỮ LIỆU THỰC TẾ
+    # 4. Xây dựng System Prompt với 5 QUY TẮC BẮT BUỘC
     system_prompt = (
-        "Bạn là 'Trợ lý CineSmart AI', một chuyên gia điện ảnh & anime thông minh, sành sỏi của nền tảng 210LoliPhim. "
-        f"QUY TẮC BẮT BUỘC SỐ 1 - KHO PHIM THỰC TẾ ĐANG CÓ TRÊN TRANG WEB GỒM: [{real_movies_str}]. "
-        "⚠️ BẮT BUỘC CHỈ ĐƯỢC GIỚI THIỆU VÀ GỢI Ý CÁC PHIM CÓ NẰM TRONG KHO PHIM THỰC TẾ Ở TRÊN! "
-        "TUYỆT ĐỐI KHÔNG TỰ BỊA HOẶC NÊU CÁC BỘ PHIM NGOÀI DANH SÁCH NÀY KHỎI BỊ NGƯỜI DÙNG BẮT BỎ HÃNG/BỊP! "
-        f"Dữ liệu thời gian thực từ ClickHouse ghi nhận phim người dùng xem nhiều nhất là: '{most_watched_movie}'. "
-        f"KHI NGƯỜI DÙNG HỎI 'Phim hợp gu tôi' HOẶC XIN GỢI Ý PHIM HỢP GU: Hãy phân tích thể loại/phong cách của phim '{most_watched_movie}' "
-        f"và chọn ra 2-3 bộ phim TRONG KHO PHIM THỰC TẾ NÀY [{real_movies_str}] có cùng thể loại hoặc hợp gu nhất để giới thiệu một cách hào hứng, giải thích vì sao hợp gu! "
-        "Hãy luôn trả lời ngắn gọn, súc tích, hài hước, dùng định dạng Markdown (in đậm, danh sách bullet...) và icon cảm xúc sinh động."
+        "Bạn là 'Trợ lý CineSmart AI', một chuyên gia điện ảnh & anime thông minh của nền tảng 210LoliPhim.\n\n"
+        "## QUY TẮC BẮT BUỘC SỐ 1 - KHO PHIM THỰC TẾ\n"
+        f"KHO PHIM ĐANG CÓ TRÊN TRANG WEB GỒM: [{real_movies_str}].\n"
+        "⚠️ BẮT BUỘC CHỈ ĐƯỢC GIỚI THIỆU VÀ GỢI Ý CÁC PHIM CÓ NẰM TRONG KHO PHIM THỰC TẾ Ở TRÊN! TUYỆT ĐỐI KHÔNG TỰ BỊA.\n\n"
+        "## QUY TẮC GỢI Ý CÁ NHÂN HÓA DỰA TRÊN THỂ LOẠI (GENRES)\n"
+        f"Lịch sử xem phim HỢP LỆ (đã lọc bỏ các phim tua nhanh, thoát ngang) của người dùng hiện tại là: [{valid_history_str}].\n"
+        f"Các phim BỊ LOẠI BỎ (thoát ngang, tua nhanh, chưa xem đủ lâu): [{ignored_history_str}].\n\n"
+        "KHI NGƯỜI DÙNG XIN GỢI Ý PHIM HỢP GU:\n"
+        "1. Hãy phân tích và xác định 'thể loại' (genres) hoặc phong cách của các bộ phim trong Lịch sử HỢP LỆ ở trên.\n"
+        "2. NẾU Lịch sử HỢP LỆ trống, hãy gợi ý các phim đang HOT nhất.\n"
+        "3. Dựa trên các thể loại đã xác định được, hãy chọn ra 2-3 bộ phim TRONG KHO PHIM THỰC TẾ có cùng thể loại hoặc hợp gu nhất để giới thiệu.\n"
+        "4. Tuyệt đối KHÔNG DÙNG thể loại của những bộ phim bị loại bỏ (tức là không nằm trong Lịch sử HỢP LỆ) để gợi ý.\n"
+        "5. Hãy giải thích ngắn gọn, súc tích và sinh động vì sao bạn lại gợi ý phim đó dựa trên thể loại họ đã xem!"
     )
 
-
-
-    # 3. Gửi System Prompt + Tin nhắn tới Gemini (gemini-1.5-flash)
+    # 5. Gửi System Prompt + Tin nhắn tới Gemini (gemini-1.5-flash)
     gemini_key = os.getenv("GEMINI_API_KEY", "")
+    is_valid_key = bool(gemini_key and gemini_key.startswith("AIzaSy"))
 
-    if not gemini_key or genai is None:
-        logger.warning("GEMINI_API_KEY chưa được thiết lập hoặc thư viện google-generativeai chưa có.")
-        # Phản hồi dự phòng thông minh khi chưa có API Key
-        fallback_reply = (
-            f"🎬 **Trợ lý CineSmart AI** (Chế độ offline):\n"
-            f"Dưới đây là các phim đang **HOT nhất** trên hệ thống theo thống kê ClickHouse thời gian thực:\n"
-            + "\n".join([f"• **{m['movie_id']}** (Độ HOT: {m['trending_score']})" for m in trending_movies[:5]])
-            + "\n\n*(Lưu ý: Hãy thiết lập `GEMINI_API_KEY` trong môi trường Docker để kích hoạt mô hình Gemini 1.5 Flash đầy đủ!)*"
-        )
+    if not is_valid_key or genai is None:
+        logger.warning("GEMINI_API_KEY chưa có hoặc chưa hợp lệ. Sử dụng bộ sinh phản hồi thông minh nội bộ.")
+        if valid_history_movies:
+            # Chọn ra 2-3 phim trong kho thực tế hợp gu (loại bỏ các phim đã xem hoặc bị skip)
+            suggested = [m for m in real_movies_list if m not in valid_history_movies and m not in ignored_history_movies][:3]
+            if not suggested:
+                suggested = [m['movie_id'] for m in trending_movies[:3]]
+            sug_str = "\n".join([f"• **{m}**" for m in suggested])
+            
+            fallback_reply = (
+                f"🎬 **Trợ lý CineSmart AI**:\n\n"
+                f"Dựa trên phân tích lịch sử xem phim chất lượng của bạn (như bộ phim **{valid_history_movies[0]}**), tôi nhận thấy bạn rất có gu điện ảnh!\n\n"
+                f"🍿 **Dưới đây là các bộ phim cùng phong cách/thể loại dành riêng cho bạn**:\n"
+                f"{sug_str}\n\n"
+                f"*(Các phim bạn tua nhanh hoặc thoát sớm như [{ignored_history_str}] đã được loại bỏ hoàn toàn khỏi bộ lọc!)*"
+            )
+        else:
+            top_movies_str = "\n".join([f"• **{m['movie_id']}** (Độ HOT: {m['trending_score']})" for m in trending_movies[:3]])
+            top_movie = trending_movies[0]['movie_id'] if trending_movies else "Phim Hot"
+            fallback_reply = (
+                f"🎬 **Trợ lý CineSmart AI**:\n\n"
+                f"Xin chào! Hệ thống chưa ghi nhận lịch sử xem đủ lâu của bạn. Dưới đây là những bộ phim đang **HOT nhất hệ thống** hiện tại:\n\n"
+                f"{top_movies_str}\n\n"
+                f"👉 **Gợi ý hàng đầu cho bạn**: Hãy trải nghiệm ngay bộ phim **{top_movie}** nhé!"
+            )
+
         return {
             "status": True,
             "reply": fallback_reply,
@@ -573,7 +627,7 @@ async def cine_smart_ai_chat(payload: ChatRequest):
         genai.configure(api_key=gemini_key)
         full_prompt = f"{system_prompt}\n\nNgười dùng nhắn: {user_message}\nCineSmart AI trả lời:"
         
-        candidate_models = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-1.5-flash", "gemini-2.5-pro", "gemini-pro-latest"]
+        candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-pro"]
 
         reply_text = None
         last_error = None
@@ -601,11 +655,28 @@ async def cine_smart_ai_chat(payload: ChatRequest):
         }
 
     except Exception as err:
-        logger.error(f"Lỗi khi gọi Gemini 1.5 Flash API: {err}")
+        logger.error(f"Lỗi khi gọi Gemini API: {err}")
+        if valid_history_movies:
+            suggested = [m for m in real_movies_list if m not in valid_history_movies and m not in ignored_history_movies][:3]
+            if not suggested:
+                suggested = [m['movie_id'] for m in trending_movies[:3]]
+            sug_str = "\n".join([f"• **{m}**" for m in suggested])
+            fallback_reply = (
+                f"🎬 **Trợ lý CineSmart AI**:\n\n"
+                f"Dựa trên phân tích lịch sử xem phim chất lượng của bạn (như bộ phim **{valid_history_movies[0]}**):\n\n"
+                f"🍿 **Gợi ý các bộ phim tương tự dành cho bạn**:\n"
+                f"{sug_str}"
+            )
+        else:
+            best_movie = trending_movies[0]['movie_id'] if trending_movies else "Phim Hot"
+            fallback_reply = (
+                f"🎬 **Trợ lý CineSmart AI**:\n\n"
+                f"Dựa trên dữ liệu thống kê thời gian thực từ hệ thống, tôi gợi ý bạn trải nghiệm ngay bộ phim **{best_movie}** đang rất HOT!"
+            )
+
         return {
             "status": True,
-            "reply": f"🤖 **Trợ lý CineSmart AI**: Rất tiếc có sự cố kết nối với Gemini API ({str(err)}). "
-                     f"Tuy nhiên tôi gợi ý bạn trải nghiệm ngay bộ phim **{trending_movies[0]['movie_id']}** đang làm mưa làm gió!",
+            "reply": fallback_reply,
             "error": str(err)
         }
 
