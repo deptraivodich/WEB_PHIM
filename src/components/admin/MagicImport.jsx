@@ -256,6 +256,19 @@ const MagicImport = () => {
               countryStr = String(countryData || '');
             }
 
+            const directorData = movie.director;
+            let directorStr = '';
+            if (Array.isArray(directorData)) {
+              directorStr = directorData.map(d => d?.name || d).filter(Boolean).join(', ');
+            } else if (directorData && typeof directorData === 'object') {
+              directorStr = directorData.name || '';
+            } else {
+              directorStr = String(directorData || '');
+            }
+
+            const statusStr = String(movie.status || 'ongoing').trim();
+            const epCurrentStr = String(movie.episode_current || '').trim();
+
             const serverData = data.episodes?.[0]?.server_data || [];
             serverData.forEach((ep, index) => {
               const rawEpName = ep.name || String(index + 1);
@@ -264,9 +277,9 @@ const MagicImport = () => {
               const epNum = match ? String(parseInt(match[0], 10)) : String(rawEpName);
 
               if (index === 0) {
-                lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, countryStr, ''].join('\t'));
+                lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, countryStr, directorStr, statusStr, epCurrentStr, ''].join('\t'));
               } else {
-                lines.push(['', '', epNum, epUrl, '', '', '', '', ''].join('\t'));
+                lines.push(['', '', epNum, epUrl, '', '', '', '', '', '', '', ''].join('\t'));
               }
             });
           });
@@ -301,10 +314,23 @@ const MagicImport = () => {
             countryStr = String(countryData || '');
           }
 
+          const directorData = movie.director;
+          let directorStr = '';
+          if (Array.isArray(directorData)) {
+            directorStr = directorData.map(d => d?.name || d).filter(Boolean).join(', ');
+          } else if (directorData && typeof directorData === 'object') {
+            directorStr = directorData.name || '';
+          } else {
+            directorStr = String(directorData || '');
+          }
+
+          const statusStr = String(movie.status || 'ongoing').trim();
+          const epCurrentStr = String(movie.episode_current || '').trim();
+
           const serverData = data.episodes?.[0]?.server_data || [];
           if (!serverData.length) throw new Error('Không tìm thấy danh sách tập phim!');
 
-          const headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Quốc Gia", "Thể Loại"];
+          const headers = ["Tên Phim", "Tên Gốc", "Tập", "Link Video", "Ảnh bìa", "Điểm IMDb", "Năm", "Quốc Gia", "Đạo Diễn", "Thông Tin", "Tập hiện tại", "Thể Loại"];
           const lines = [headers.join('\t')];
 
           serverData.forEach((ep, index) => {
@@ -314,9 +340,9 @@ const MagicImport = () => {
             const epNum = match ? String(parseInt(match[0], 10)) : String(rawEpName);
 
             if (index === 0) {
-              lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, countryStr, ''].join('\t'));
+              lines.push([title, originalTitle, epNum, epUrl, posterUrl, imdb, year, countryStr, directorStr, statusStr, epCurrentStr, ''].join('\t'));
             } else {
-              lines.push(['', '', epNum, epUrl, '', '', '', '', ''].join('\t'));
+              lines.push(['', '', epNum, epUrl, '', '', '', '', '', '', '', ''].join('\t'));
             }
           });
 
@@ -418,23 +444,37 @@ const MagicImport = () => {
         const existingCountry = String(match.country || '').trim();
         const hasCountryUpdate = Boolean(incomingCountry && incomingCountry !== existingCountry);
 
+        const incomingDirector = String(movie.director || '').trim();
+        const existingDirector = String(match.director || '').trim();
+        const hasDirectorUpdate = Boolean(incomingDirector && incomingDirector !== existingDirector && incomingDirector !== 'Đang cập nhật');
+
+        const incomingStatus = String(movie.status || '').trim();
+        const existingStatus = String(match.status || '').trim();
+        const hasStatusUpdate = Boolean(incomingStatus && incomingStatus !== existingStatus);
+
+        const incomingEpCurrent = String(movie.episodeCurrent || movie.episodesStatus || '').trim();
+        const existingEpCurrent = String(match.episodeCurrent || match.episodesStatus || '').trim();
+        const hasEpisodeCurrentUpdate = Boolean(incomingEpCurrent && incomingEpCurrent !== existingEpCurrent);
+
         // Trích xuất CHỈ NHỮNG TẬP MỚI
         const newEpsOnly = findNewEpisodesOnly(existingEps, movie.episodes || []);
         const hasNewEpisodes = newEpsOnly.length > 0;
         const merged = mergeEpisodesList(existingEps, movie.episodes || []);
 
-        if (hasNewEpisodes || hasCountryUpdate) {
+        const hasAnyUpdate = hasNewEpisodes || hasCountryUpdate || hasDirectorUpdate || hasStatusUpdate || hasEpisodeCurrentUpdate;
+
+        if (hasAnyUpdate) {
           // -------------------------------------------------------------------
-          // KỊCH BẢN 2: PHIM ĐÃ CÓ TRONG DB, CÓ TẬP MỚI HOẶC CÓ QUỐC GIA MỚI -> status = 'update'
+          // KỊCH BẢN 2: PHIM ĐÃ CÓ TRONG DB, CÓ THAY ĐỔI 1 TRONG 5 TRƯỜNG -> status = 'update'
           // -------------------------------------------------------------------
-          let updateReasonText = '🔄 Tự Động Gộp Phim';
-          if (hasNewEpisodes && hasCountryUpdate) {
-            updateReasonText = `🔄 Gộp +${newEpsOnly.length} Tập & Quốc gia (${incomingCountry})`;
-          } else if (hasNewEpisodes) {
-            updateReasonText = `🔄 Tự Động Gộp (+${newEpsOnly.length} Tập Mới)`;
-          } else if (hasCountryUpdate) {
-            updateReasonText = `🌐 Bổ sung Quốc gia (${incomingCountry})`;
-          }
+          const updateReasons = [];
+          if (hasNewEpisodes) updateReasons.push(`+${newEpsOnly.length} Tập Mới`);
+          if (hasCountryUpdate) updateReasons.push(`Quốc gia (${incomingCountry})`);
+          if (hasDirectorUpdate) updateReasons.push(`Đạo diễn (${incomingDirector})`);
+          if (hasStatusUpdate) updateReasons.push(`Trạng thái (${incomingStatus})`);
+          if (hasEpisodeCurrentUpdate) updateReasons.push(`Tập hiện tại (${incomingEpCurrent})`);
+
+          const updateReasonText = `🔄 Gộp (${updateReasons.join(', ')})`;
 
           return {
             ...movie,
@@ -445,8 +485,15 @@ const MagicImport = () => {
             matchedMovieTitle: match.title,
             hasNewEpisodes,
             hasCountryUpdate,
+            hasDirectorUpdate,
+            hasStatusUpdate,
+            hasEpisodeCurrentUpdate,
             updateReasonText,
             country: incomingCountry || existingCountry,
+            director: incomingDirector || existingDirector,
+            movieStatus: incomingStatus || existingStatus,
+            episodeCurrent: incomingEpCurrent || existingEpCurrent,
+            episodesStatus: incomingEpCurrent || movie.episodesStatus || match.episodesStatus,
             newEpisodes: newEpsOnly,
             newEpisodesCount: newEpsOnly.length,
             existingEpisodesCount: existingEps.length,
@@ -455,7 +502,7 @@ const MagicImport = () => {
           };
         } else {
           // -------------------------------------------------------------------
-          // KỊCH BẢN 3: PHIM ĐÃ CÓ TRONG DB, KHÔNG CÓ TẬP MỚI & KHÔNG ĐỔI QUỐC GIA -> status = 'duplicate'
+          // KỊCH BẢN 3: PHIM ĐÃ CÓ TRONG DB, KHÔNG CÓ BẤT KỲ THAY ĐỔI NÀO -> status = 'duplicate'
           // -------------------------------------------------------------------
           return {
             ...movie,
@@ -466,7 +513,12 @@ const MagicImport = () => {
             matchedMovieTitle: match.title,
             hasNewEpisodes: false,
             hasCountryUpdate: false,
+            hasDirectorUpdate: false,
+            hasStatusUpdate: false,
+            hasEpisodeCurrentUpdate: false,
             country: existingCountry || incomingCountry,
+            director: existingDirector || incomingDirector,
+            episodeCurrent: existingEpCurrent || incomingEpCurrent,
             newEpisodes: [],
             newEpisodesCount: 0,
             existingEpisodesCount: existingEps.length,
@@ -552,8 +604,11 @@ const MagicImport = () => {
               id: matchedMovieId,
               episodes: finalEpisodes,
               episodesCount: `${finalEpisodes.length} Tập`,
-              episodesStatus: `Tập hoàn tất (${finalEpisodes.length}/${finalEpisodes.length})`,
+              episodesStatus: movie.episodeCurrent || movie.episodesStatus || `Tập ${finalEpisodes.length}`,
+              episodeCurrent: movie.episodeCurrent || cleanMovie.episodeCurrent || `Tập ${finalEpisodes.length}`,
               country: movie.country || cleanMovie.country || '',
+              director: movie.director || cleanMovie.director || '',
+              status: movie.movieStatus || cleanMovie.status || 'ongoing',
               m3u8Url: finalEpisodes[0]?.url || cleanMovie.m3u8Url || '',
               updatedAt: new Date().toISOString()
             });

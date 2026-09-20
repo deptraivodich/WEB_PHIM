@@ -1,8 +1,29 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Navbar from '../../components/common/Navbar';
 import { getMovies } from '../../services/movieService';
+import { getCurrentSession } from '../../services/authService';
+import { 
+  getMovieStats, 
+  toggleMovieLike, 
+  getMovieComments, 
+  addMovieComment 
+} from '../../services/interactionService';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { generateSlug } from '../../utils/slugUtils';
+
+const formatTimeAgo = (dateStr) => {
+  if (!dateStr) return 'Vừa xong';
+  try {
+    const diff = (Date.now() - new Date(dateStr).getTime()) / 1000;
+    if (diff < 60) return 'Vừa xong';
+    if (diff < 3600) return `${Math.floor(diff / 60)} phút trước`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} giờ trước`;
+    return `${Math.floor(diff / 86400)} ngày trước`;
+  } catch (e) {
+    return 'Gần đây';
+  }
+};
 
 // Fallback template when fetching detail
 const DEFAULT_FALLBACK_MOVIE = {
@@ -19,7 +40,6 @@ const DEFAULT_FALLBACK_MOVIE = {
   episodesCount: 'Full Tập',
   audio: 'Vietsub + Thuyết Minh',
   director: 'Đang cập nhật',
-  actors: 'Đang cập nhật',
   genres: ['Hành động', 'Viễn tưởng'],
   description: 'Mô tả chi tiết nội dung phim đang được cập nhật từ hệ thống.',
   episodes: Array.from({ length: 12 }, (_, i) => ({
@@ -29,28 +49,20 @@ const DEFAULT_FALLBACK_MOVIE = {
   }))
 };
 
-// Sidebar Top Movies Weekly mock
-const TOP_WEEKLY = [
-  { rank: 1, title: 'Deadpool & Wolverine', views: '1.2M', imdb: '8.1', poster: 'https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=300&auto=format&fit=crop&q=80' },
-  { rank: 2, title: 'Godzilla x Kong', views: '980K', imdb: '7.4', poster: 'https://images.unsplash.com/photo-1563089145-599997674d42?w=300&auto=format&fit=crop&q=80' },
-  { rank: 3, title: 'Oppenheimer', views: '850K', imdb: '8.9', poster: 'https://images.unsplash.com/photo-1440404653325-ab127d49abc1?w=300&auto=format&fit=crop&q=80' },
-  { rank: 4, title: 'Avatar: Dòng Nước', views: '720K', imdb: '7.8', poster: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=300&auto=format&fit=crop&q=80' }
-];
-
 const DetailFilm = () => {
-  const { id } = useParams(); // LỖI 3 FIX: Dynamic URL Param ID extraction
+  const { slug, id } = useParams(); // SEO Slug or ID param
+  const targetSlug = slug || id;
   const [movieDetail, setMovieDetail] = useState(null);
+  const [allMovies, setAllMovies] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedEpisode, setSelectedEpisode] = useState(1);
   const [isFavorite, setIsFavorite] = useState(false);
+  const [viewsCount, setViewsCount] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [comments, setComments] = useState([
-    { id: 1, user: 'MinhPhim99', avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100', text: 'Phim đỉnh thực sự! Trải nghiệm 4K âm thanh cực kỳ sống động.', time: '2 giờ trước' },
-    { id: 2, user: 'CinemaFanatic', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100', text: 'Bản thuyết minh rất mượt.', time: '5 giờ trước' }
-  ]);
+  const [comments, setComments] = useState([]); // Xóa bỏ hoàn toàn bình luận ảo (mock data)
   const [newComment, setNewComment] = useState('');
 
-  // LỖI 3 FIX: Fetch & re-bind movie data whenever ID in URL changes
+  // Fetch & re-bind movie data whenever slug/id in URL changes
   useEffect(() => {
     const fetchMovieData = async () => {
       setIsLoading(true);
@@ -58,7 +70,14 @@ const DetailFilm = () => {
 
       try {
         const moviesList = await getMovies();
-        const found = (moviesList || []).find(m => String(m.id) === String(id) || String(m.id) === String(id?.trim()));
+        setAllMovies(moviesList || []);
+
+        // Đối chiếu slug trên URL với generateSlug(movie.title) hoặc id
+        const found = (moviesList || []).find(m => 
+          generateSlug(m.title) === targetSlug || 
+          String(m.id) === String(targetSlug) ||
+          generateSlug(m.originalTitle) === targetSlug
+        );
 
         const formatEpisodes = (rawEps, defaultM3u8) => {
           if (Array.isArray(rawEps) && rawEps.length > 0) {
@@ -87,8 +106,20 @@ const DetailFilm = () => {
             episodes: parsedEps,
             episodesCount: `${parsedEps.length} Tập`
           });
+
+          // Đồng bộ Lượt xem, Trạng thái Yêu thích, và Bình luận thật từ API
+          const session = getCurrentSession();
+          const username = session?.username || 'anonymous';
+          getMovieStats(found.id, username).then(stats => {
+            if (stats) {
+              setViewsCount(stats.views || 0);
+              setIsFavorite(stats.is_liked || false);
+            }
+          });
+          getMovieComments(found.id).then(cmts => {
+            setComments(cmts || []);
+          });
         } else if (moviesList && moviesList.length > 0) {
-          // If requested ID not found, use first available movie or default template
           const fallback = moviesList[0];
           const parsedEps = formatEpisodes(fallback.episodes, fallback.m3u8Url);
           setMovieDetail({
@@ -96,11 +127,23 @@ const DetailFilm = () => {
             episodes: parsedEps,
             episodesCount: `${parsedEps.length} Tập`
           });
+
+          const session = getCurrentSession();
+          const username = session?.username || 'anonymous';
+          getMovieStats(fallback.id, username).then(stats => {
+            if (stats) {
+              setViewsCount(stats.views || 0);
+              setIsFavorite(stats.is_liked || false);
+            }
+          });
+          getMovieComments(fallback.id).then(cmts => {
+            setComments(cmts || []);
+          });
         } else {
           setMovieDetail(DEFAULT_FALLBACK_MOVIE);
         }
       } catch (err) {
-        console.error("Error fetching detail for ID:", id, err);
+        console.error("Error fetching detail for slug/id:", targetSlug, err);
         setMovieDetail(DEFAULT_FALLBACK_MOVIE);
       } finally {
         setIsLoading(false);
@@ -109,7 +152,96 @@ const DetailFilm = () => {
 
     fetchMovieData();
     window.scrollTo(0, 0); // Scroll to top when changing movie
-  }, [id]);
+  }, [targetSlug]);
+
+  // Thuật toán 'Phim Liên Quan' (Tối đa 10 phim)
+  const relatedMovies = useMemo(() => {
+    if (!movieDetail || !allMovies || allMovies.length === 0) return [];
+
+    const currentId = String(movieDetail.id);
+    const currentTitle = movieDetail.title || '';
+    const currentGenres = Array.isArray(movieDetail.genres) 
+      ? movieDetail.genres.map(g => String(g).trim().toLowerCase()) 
+      : String(movieDetail.genres || '').split(/[,;/|]+/).map(g => g.trim().toLowerCase()).filter(Boolean);
+
+    // Chuẩn hóa tên phim để tìm chuỗi tên gốc (bỏ "phần X", "season X", "part X", số tập...)
+    const getCleanRootTitle = (t) => {
+      if (!t) return '';
+      return String(t)
+        .toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd')
+        .replace(/[\(\[\{]?(phan|season|ss|part|tap|movie|ova)[\s\d:–\-]+[\)\]\}]?/gi, '')
+        .replace(/[\(\[\{][^\)\]\}]*[\)\]\}]/g, '')
+        .replace(/\s+\d+$/, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .trim();
+    };
+
+    const currentRoot = getCleanRootTitle(currentTitle);
+
+    // Lọc bỏ phim hiện tại
+    const candidateMovies = allMovies.filter(m => m && String(m.id) !== currentId);
+
+    // Logic ưu tiên 1: Cùng chuỗi tên (trùng tiền tố / hậu tố / cùng franchise)
+    const priority1Movies = [];
+    const addedIds = new Set();
+
+    if (currentRoot.length >= 3) {
+      candidateMovies.forEach(m => {
+        const otherRoot = getCleanRootTitle(m.title || '');
+        if (otherRoot.length >= 3) {
+          const isSameRoot = otherRoot === currentRoot;
+          const isPrefixOrSuffix = otherRoot.startsWith(currentRoot) || currentRoot.startsWith(otherRoot) || 
+                                   otherRoot.includes(currentRoot) || currentRoot.includes(otherRoot);
+
+          if (isSameRoot || isPrefixOrSuffix) {
+            priority1Movies.push(m);
+            addedIds.add(String(m.id));
+          }
+        }
+      });
+    }
+
+    // Logic ưu tiên 2: Cùng Thể loại với phim đang xem cho đến khi đủ 10 phim
+    const priority2Candidates = [];
+    if (priority1Movies.length < 10) {
+      candidateMovies.forEach(m => {
+        if (!addedIds.has(String(m.id))) {
+          const mGenres = Array.isArray(m.genres) 
+            ? m.genres.map(g => String(g).trim().toLowerCase()) 
+            : String(m.genres || '').split(/[,;/|]+/).map(g => g.trim().toLowerCase()).filter(Boolean);
+          
+          const matchCount = mGenres.filter(g => currentGenres.includes(g)).length;
+          if (matchCount > 0) {
+            priority2Candidates.push({ movie: m, matchCount });
+          }
+        }
+      });
+
+      // Sắp xếp ưu tiên phim có nhiều thể loại trùng nhất lên trước
+      priority2Candidates.sort((a, b) => b.matchCount - a.matchCount);
+    }
+
+    const priority2Movies = priority2Candidates.map(c => {
+      addedIds.add(String(c.movie.id));
+      return c.movie;
+    });
+
+    let combined = [...priority1Movies, ...priority2Movies];
+
+    // Nếu vẫn chưa đủ 10, điền thêm các phim khác trong DB cho đủ 10
+    if (combined.length < 10) {
+      for (const m of candidateMovies) {
+        if (!addedIds.has(String(m.id))) {
+          combined.push(m);
+          addedIds.add(String(m.id));
+          if (combined.length >= 10) break;
+        }
+      }
+    }
+
+    return combined.slice(0, 10);
+  }, [movieDetail, allMovies]);
 
   const handleShare = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -117,19 +249,27 @@ const DetailFilm = () => {
     setTimeout(() => setCopied(false), 2500);
   };
 
-  const handleAddComment = (e) => {
+  const handleToggleFavorite = async () => {
+    if (!movieDetail?.id) return;
+    const session = getCurrentSession();
+    const username = session?.username || 'anonymous';
+    const res = await toggleMovieLike(movieDetail.id, username);
+    setIsFavorite(res.is_liked);
+  };
+
+  const handleAddComment = async (e) => {
     e.preventDefault();
-    if (newComment.trim()) {
-      setComments([
-        {
-          id: Date.now(),
-          user: 'Bạn (VIP Member)',
-          avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100',
-          text: newComment.trim(),
-          time: 'Vừa xong'
-        },
-        ...comments
-      ]);
+    if (!newComment.trim() || !movieDetail?.id) return;
+    const session = getCurrentSession();
+    const username = session?.displayName || session?.username || 'Khách';
+    const created = await addMovieComment(movieDetail.id, {
+      userId: session?.username || 'anonymous',
+      username: username,
+      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100',
+      content: newComment.trim()
+    });
+    if (created) {
+      setComments(prev => [created, ...prev]);
       setNewComment('');
     }
   };
@@ -157,12 +297,13 @@ const DetailFilm = () => {
     episodesCount = 'Full Tập',
     badge = 'Vietsub + Thuyết Minh',
     director = 'Đang cập nhật',
-    actors = 'Đang cập nhật',
     country = 'Nhật Bản',
     genres = ['Hành động', 'Viễn tưởng'],
     description = 'Tóm tắt nội dung phim đang được cập nhật.',
     episodes = []
   } = movieDetail;
+
+  const movieSlug = generateSlug(title) || activeId;
 
   return (
     <div className="min-h-screen bg-background text-white pb-24">
@@ -268,28 +409,37 @@ const DetailFilm = () => {
                   {description}
                 </p>
 
-                {/* Country, Director & Cast */}
+                {/* Country & Director (ĐÃ XÓA BỎ DÒNG 'Diễn viên: Đang cập nhật' THEO NHIỆM VỤ 2) */}
                 <div className="text-xs text-gray-400 space-y-1 pt-1">
                   <p><strong className="text-gray-200">Quốc gia:</strong> <span className="text-emerald-400 font-semibold">{country}</span></p>
                   <p><strong className="text-gray-200">Đạo diễn:</strong> {director}</p>
-                  <p><strong className="text-gray-200">Diễn viên:</strong> {actors}</p>
                 </div>
-
-                {/* Action Buttons Section */}
                 <div className="flex flex-wrap items-center justify-center md:justify-start gap-4 pt-4">
-                  {/* Big Prominent Highlighted 'Xem Ngay' Button with Dynamic Movie ID */}
+                  {/* Big Prominent Highlighted 'Xem Ngay' Button with Dynamic Movie SEO Slug Route */}
                   <Link 
-                    to={`/watch/${activeId}?ep=${selectedEpisode}`}
+                    to={`/movie/${movieSlug}/tap-${selectedEpisode}`}
                     className="px-8 py-3.5 rounded-xl bg-gradient-to-r from-yellow-400 via-amber-500 to-amber-600 hover:from-yellow-300 hover:to-amber-500 text-black font-extrabold text-sm sm:text-base flex items-center gap-2 shadow-[0_0_30px_rgba(251,191,36,0.6)] hover:scale-105 transition-all duration-300 cursor-pointer"
                   >
                     <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                     <span>XEM NGAY (TẬP {selectedEpisode})</span>
                   </Link>
 
-                  {/* Circular Icon Buttons: Yêu thích, Bình luận, Chia sẻ */}
+                  {/* Circular Icon Buttons: Lượt xem, Yêu thích, Bình luận, Chia sẻ */}
                   <div className="flex items-center space-x-3">
+                    {/* UI Nút Lượt xem: hiển thị số Lượt xem đồng bộ toàn cầu (bắt đầu từ 0) */}
+                    <div 
+                      title={`Tổng lượt xem toàn cầu: ${viewsCount.toLocaleString()} lượt`}
+                      className="h-11 px-3.5 rounded-full bg-surface-card text-neon-cyan border border-glass-border flex items-center gap-1.5 shadow-sm text-xs font-bold select-none cursor-default"
+                    >
+                      <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                        <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                      </svg>
+                      <span>{viewsCount.toLocaleString()}</span>
+                    </div>
+
+                    {/* Nút Yêu thích (giao diện giữ nguyên, gọi API lưu/xóa, không hiện tổng tim) */}
                     <button 
-                      onClick={() => setIsFavorite(!isFavorite)}
+                      onClick={handleToggleFavorite}
                       title={isFavorite ? 'Đã yêu thích' : 'Thêm vào yêu thích'}
                       className={`w-11 h-11 rounded-full flex items-center justify-center border transition-all duration-300 ${
                         isFavorite 
@@ -317,7 +467,7 @@ const DetailFilm = () => {
                       title="Chia sẻ phim"
                       className="relative w-11 h-11 rounded-full bg-surface-card text-gray-300 hover:text-white border border-glass-border hover:border-amber-500/50 hover:bg-amber-500/20 flex items-center justify-center transition-all duration-300"
                     >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-5 h-5 fill-none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/>
                       </svg>
                       {copied && (
@@ -343,12 +493,12 @@ const DetailFilm = () => {
                 <span className="text-xs text-neon-cyan font-semibold">Nguồn m3u8 Vietsub • KKPhim</span>
               </div>
 
-              {/* Episode Rectangular Grid Buttons */}
+              {/* Episode Rectangular Grid Buttons with SEO Slug URL */}
               <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2.5">
                 {episodes.map((ep) => (
                   <Link
                     key={ep.number}
-                    to={`/watch/${activeId}?ep=${ep.number}`}
+                    to={`/movie/${movieSlug}/tap-${ep.number}`}
                     onClick={() => setSelectedEpisode(ep.number)}
                     className={`py-2.5 px-3 rounded-xl text-center text-xs font-bold transition-all duration-200 border ${
                       selectedEpisode === ep.number
@@ -380,72 +530,112 @@ const DetailFilm = () => {
                 />
                 <button 
                   type="submit"
-                  className="px-6 py-3 rounded-xl bg-neon-cyan/20 hover:bg-neon-cyan/30 text-neon-cyan border border-neon-cyan/40 text-xs font-bold transition-all"
+                  className="px-6 py-3 rounded-xl bg-neon-cyan/20 hover:bg-neon-cyan/30 text-neon-cyan border border-neon-cyan/40 text-xs font-bold transition-all cursor-pointer"
                 >
                   Gửi
                 </button>
               </form>
 
-              {/* Comment List */}
+              {/* Comment List (Real Comments with Intermediate Key Variable) */}
               <div className="space-y-4">
-                {comments.map((c) => (
-                  <div key={c.id} className="flex items-start space-x-3 p-3.5 rounded-xl bg-background/40 border border-white/5">
-                    <img src={c.avatar} alt="Avatar" className="w-9 h-9 rounded-full object-cover border border-white/10" />
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-gray-200">{c.user}</span>
-                        <span className="text-gray-500 text-[10px]">{c.time}</span>
-                      </div>
-                      <p className="text-xs text-gray-300 mt-1">{c.text}</p>
-                    </div>
+                {comments.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-gray-400 bg-background/30 rounded-xl border border-white/5">
+                    Chưa có bình luận nào. Hãy là người đầu tiên bình luận về bộ phim này!
                   </div>
-                ))}
+                ) : (
+                  comments.map((c, idx) => {
+                    const itemKey = `cmt-${c.id || idx}`;
+                    return (
+                      <div key={itemKey} className="flex items-start space-x-3 p-3.5 rounded-xl bg-background/40 border border-white/5">
+                        <img 
+                          src={c.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100'} 
+                          alt="Avatar" 
+                          onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100'; }}
+                          className="w-9 h-9 rounded-full object-cover border border-white/10 flex-shrink-0" 
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold text-gray-200">{c.username || c.user || 'Người dùng'}</span>
+                            <span className="text-gray-500 text-[10px]">{formatTimeAgo(c.created_at || c.time)}</span>
+                          </div>
+                          <p className="text-xs text-gray-300 mt-1 break-words">{c.content || c.text}</p>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
 
           </div>
 
-          {/* Right Sidebar: Top Phim Tuần Này */}
+          {/* Right Sidebar: Phim Liên Quan (NHIỆM VỤ 2 & 3) */}
           <aside className="hidden xl:block w-80 flex-shrink-0 space-y-4">
             <div className="p-5 rounded-2xl bg-surface-card/90 border border-glass-border backdrop-blur-md space-y-4">
               <h3 className="text-base font-extrabold text-white flex items-center justify-between">
                 <span className="flex items-center gap-2">
-                  <span className="text-neon-red">🔥</span> Top Phim Tuần Này
+                  <span className="text-neon-red">🎬</span> Phim liên quan
                 </span>
-                <span className="text-[10px] text-gray-400">BXH Cổ Bể</span>
+                <span className="text-[10px] text-gray-400 font-bold">210LoliPhim</span>
               </h3>
 
               <div className="space-y-3">
-                {TOP_WEEKLY.map((item) => (
-                  <Link 
-                    key={item.rank} 
-                    to={`/movie/${activeId}`}
-                    className="flex items-center space-x-3 p-2 rounded-xl hover:bg-white/5 transition-all group"
-                  >
-                    <span className={`text-2xl font-black italic w-6 text-center ${
-                      item.rank === 1 ? 'text-yellow-400 drop-shadow-[0_0_10px_rgba(250,204,21,0.5)]' :
-                      item.rank === 2 ? 'text-gray-300' :
-                      item.rank === 3 ? 'text-amber-600' : 'text-gray-600'
-                    }`}>
-                      {item.rank}
-                    </span>
+                {relatedMovies.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-4">Chưa có phim liên quan</p>
+                ) : (
+                  relatedMovies.map((item, index) => {
+                    // BẮT BUỘC DÙNG BIẾN TRUNG GIAN CHO THUỘC TÍNH KEY KHI LẶP .MAP()
+                    const itemKey = `related-movie-${item.id || index}-${index}`;
+                    const itemSlug = generateSlug(item.title) || item.id;
+                    const itemRank = index + 1;
+                    const itemFormattedTitle = formatVietnameseSentenceCase(item.title);
 
-                    <div className="w-12 h-16 rounded-lg overflow-hidden flex-shrink-0 border border-glass-border group-hover:scale-105 transition-transform">
-                      <img src={item.poster} alt={item.title} className="w-full h-full object-cover" />
-                    </div>
+                    return (
+                      <Link 
+                        key={itemKey} 
+                        to={`/movie/${itemSlug}`}
+                        className="flex items-center space-x-3 p-2 rounded-xl hover:bg-white/5 transition-all group"
+                      >
+                        <span className={`text-2xl font-black italic w-6 text-center ${
+                          itemRank === 1 ? 'text-yellow-400 drop-shadow-[0_0_10px_rgba(250,204,21,0.5)]' :
+                          itemRank === 2 ? 'text-gray-300' :
+                          itemRank === 3 ? 'text-amber-600' : 'text-gray-600'
+                        }`}>
+                          {itemRank}
+                        </span>
 
-                    <div className="flex-1 min-w-0">
-                      <h4 className="text-xs font-bold text-gray-200 truncate group-hover:text-neon-red transition-colors">
-                        {item.title}
-                      </h4>
-                      <div className="flex items-center space-x-2 text-[10px] text-gray-400 mt-0.5">
-                        <span className="text-yellow-400 font-semibold">★ {item.imdb}</span>
-                        <span>•</span>
-                        <span>{item.views} lượt xem</span>
-                      </div>
-                    </div>
-                  </Link>
-                ))}
+                        <div className="w-12 h-16 rounded-lg overflow-hidden flex-shrink-0 border border-glass-border group-hover:scale-105 transition-transform">
+                          <img 
+                            src={item.poster || item.banner} 
+                            alt={itemFormattedTitle} 
+                            className="w-full h-full object-cover" 
+                            onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=300'; }}
+                          />
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-xs font-bold text-gray-200 truncate group-hover:text-neon-red transition-colors">
+                            {itemFormattedTitle}
+                          </h4>
+                          <div className="flex items-center space-x-2 text-[10px] text-gray-400 mt-0.5">
+                            <span className="text-yellow-400 font-semibold">★ {item.imdb || '8.0'}</span>
+                            {item.year && (
+                              <>
+                                <span>•</span>
+                                <span>{item.year}</span>
+                              </>
+                            )}
+                          </div>
+                          {Array.isArray(item.genres) && item.genres.length > 0 && (
+                            <p className="text-[10px] text-gray-500 truncate mt-0.5">
+                              {item.genres.slice(0, 2).join(', ')}
+                            </p>
+                          )}
+                        </div>
+                      </Link>
+                    );
+                  })
+                )}
               </div>
             </div>
           </aside>

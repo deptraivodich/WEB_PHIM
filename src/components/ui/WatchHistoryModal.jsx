@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { formatVietnameseSentenceCase, generateSlug } from '../../utils/textUtils';
 import { deleteHistoryItem, clearUserWatchHistory } from '../../services/historyService';
 
 /**
@@ -191,7 +191,7 @@ const WatchHistoryModal = ({ isOpen, onClose, username, history = [], onHistoryC
 
                       <div className="flex items-center gap-1.5 pt-1">
                         <Link
-                          to={`/watch/${item.movieId}?ep=${item.episode || '1'}`}
+                          to={`/movie/${generateSlug(item.title) || item.movieId}/tap-${item.episode || '1'}`}
                           onClick={onClose}
                           className="flex-1 py-1.5 px-2 rounded-lg bg-gradient-to-r from-neon-cyan to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-black font-black text-[11px] text-center shadow-md transition-all flex items-center justify-center gap-1"
                         >
@@ -199,7 +199,7 @@ const WatchHistoryModal = ({ isOpen, onClose, username, history = [], onHistoryC
                         </Link>
 
                         <Link
-                          to={`/movie/${item.movieId}`}
+                          to={`/movie/${generateSlug(item.title) || item.movieId}`}
                           onClick={onClose}
                           className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs text-center border border-white/15 transition-all"
                           title="Chi tiết phim"

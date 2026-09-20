@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { generateSlug } from '../../utils/slugUtils';
 import { trackEvent } from '../../services/telemetryService';
 
 /**
@@ -16,7 +17,8 @@ const MovieCard = ({
   isLoading = false,
   layoutMode = 'grid',
   isFirst = false,
-  isLast = false
+  isLast = false,
+  showHoverPopup = true
 }) => {
   const [imgError, setImgError] = useState(false);
 
@@ -47,6 +49,7 @@ const MovieCard = ({
 
   const coverImage = banner || poster;
   const formattedTitle = formatVietnameseSentenceCase(title);
+  const movieSlug = generateSlug(title) || id;
 
   // Dynamic positioning class based on isFirst / isLast props to prevent edge clipping
   const popupPositionClass = isFirst
@@ -63,11 +66,11 @@ const MovieCard = ({
   };
 
   return (
-    <div className={`relative cursor-pointer group select-none block transition-transform duration-300 hover:scale-105 hover:z-50 ${layoutMode === 'carousel' ? 'w-44 sm:w-52 md:w-60 flex-shrink-0' : 'w-full h-full'}`}>
+    <div className={`relative cursor-pointer group select-none block transition-transform duration-300 hover:scale-105 ${showHoverPopup ? 'hover:z-50' : ''} ${layoutMode === 'carousel' ? 'w-44 sm:w-52 md:w-60 flex-shrink-0' : 'w-full h-full'}`}>
 
       {/* 1. NORMAL CARD VIEW */}
       <div className="w-full h-full space-y-2">
-        <Link to={`/movie/${id}`} onClick={handleTrackClick} className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
+        <Link to={`/movie/${movieSlug}`} onClick={handleTrackClick} className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
           <img
             src={poster}
             alt={formattedTitle}
@@ -104,91 +107,93 @@ const MovieCard = ({
       </div>
 
       {/* 2. HOVER EXPANDED POPUP CARD - Responsive Width & Smooth Scale-In */}
-      <div className={`absolute top-1/2 -translate-y-1/2 ${popupPositionClass} w-[220px] sm:w-[260px] md:w-[300px] lg:w-[340px] scale-90 opacity-0 invisible group-hover:scale-100 group-hover:opacity-100 group-hover:visible pointer-events-none group-hover:pointer-events-auto transition-all duration-300 ease-out rounded-xl bg-[#14151a] border border-[#2a2d3a] shadow-[0_20px_50px_rgba(0,0,0,0.95)] overflow-hidden z-50 text-white`}>
+      {showHoverPopup && (
+        <div className={`absolute top-1/2 -translate-y-1/2 ${popupPositionClass} w-[220px] sm:w-[260px] md:w-[300px] lg:w-[340px] scale-90 opacity-0 invisible group-hover:scale-100 group-hover:opacity-100 group-hover:visible pointer-events-none group-hover:pointer-events-auto transition-all duration-300 ease-out rounded-xl bg-[#14151a] border border-[#2a2d3a] shadow-[0_20px_50px_rgba(0,0,0,0.95)] overflow-hidden z-50 text-white`}>
 
-        {/* Top Banner Image (16:9) & Gradient */}
-        <div className="relative w-full aspect-video bg-[#1a1e30] overflow-hidden rounded-t-xl">
-          {!imgError ? (
-            <img
-              src={coverImage}
-              alt={formattedTitle}
-              onError={() => setImgError(true)}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center bg-[#1a1e30] text-gray-500 text-xs font-medium">
-              Không có ảnh bìa
+          {/* Top Banner Image (16:9) & Gradient */}
+          <div className="relative w-full aspect-video bg-[#1a1e30] overflow-hidden rounded-t-xl">
+            {!imgError ? (
+              <img
+                src={coverImage}
+                alt={formattedTitle}
+                onError={() => setImgError(true)}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center bg-[#1a1e30] text-gray-500 text-xs font-medium">
+                Không có ảnh bìa
+              </div>
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-[#14151a] via-[#14151a]/50 to-transparent"></div>
+          </div>
+
+          {/* Details & Action Controls Section */}
+          <div className="relative px-3.5 pb-3.5 -mt-6 sm:-mt-8">
+
+            <h3 className="text-white font-black text-sm sm:text-base truncate drop-shadow-lg">
+              {formattedTitle}
+            </h3>
+            {originalTitle && (
+              <p className="text-amber-400 text-[11px] sm:text-xs mb-2.5 sm:mb-3 truncate drop-shadow-md font-medium">
+                {originalTitle}
+              </p>
+            )}
+
+            <div className="flex items-center gap-1.5 sm:gap-2 mb-2.5 sm:mb-3.5 w-full">
+              <Link
+                to={`/movie/${movieSlug}/tap-1`}
+                onClick={handleTrackClick}
+                className="flex-1 bg-[#ffce45] text-black font-extrabold py-1.5 px-2.5 rounded-lg hover:bg-amber-300 transition-colors flex justify-center items-center gap-1 shadow-md text-xs"
+              >
+                <svg className="w-3.5 h-3.5 fill-current flex-shrink-0" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+                <span>Xem ngay</span>
+              </Link>
+
+              <button
+                type="button"
+                className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
+                title="Thêm vào yêu thích"
+              >
+                <span className="text-red-400 text-sm leading-none">♥</span> Thích
+              </button>
+
+              <Link
+                to={`/movie/${movieSlug}`}
+                onClick={handleTrackClick}
+                className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
+                title="Xem chi tiết phim"
+              >
+                <span className="text-gray-300 text-xs leading-none">ℹ</span> Chi tiết
+              </Link>
             </div>
-          )}
-          <div className="absolute inset-0 bg-gradient-to-t from-[#14151a] via-[#14151a]/50 to-transparent"></div>
+
+            {/* Metadata Badges Row */}
+            <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 mb-2 text-[9px] sm:text-[10px] font-semibold">
+              <span className="px-1.5 py-0.5 rounded border border-amber-400/80 text-amber-400 bg-amber-400/10">
+                ★ {imdb} IMDb
+              </span>
+              <span className="px-1.5 py-0.5 rounded border border-gray-500 bg-gray-800 text-gray-200">
+                {ageRating}
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
+                {year}
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
+                {season}
+              </span>
+              <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
+                {episodesStatus}
+              </span>
+            </div>
+
+            {/* Genres Footer Text Row */}
+            <div className="text-[9px] sm:text-[10px] text-gray-400 font-medium truncate">
+              {Array.isArray(genres) ? genres.join(' • ') : genres}
+            </div>
+
+          </div>
         </div>
-
-        {/* Details & Action Controls Section */}
-        <div className="relative px-3.5 pb-3.5 -mt-6 sm:-mt-8">
-
-          <h3 className="text-white font-black text-sm sm:text-base truncate drop-shadow-lg">
-            {formattedTitle}
-          </h3>
-          {originalTitle && (
-            <p className="text-amber-400 text-[11px] sm:text-xs mb-2.5 sm:mb-3 truncate drop-shadow-md font-medium">
-              {originalTitle}
-            </p>
-          )}
-
-          <div className="flex items-center gap-1.5 sm:gap-2 mb-2.5 sm:mb-3.5 w-full">
-            <Link
-              to={`/watch/${id}`}
-              onClick={handleTrackClick}
-              className="flex-1 bg-[#ffce45] text-black font-extrabold py-1.5 px-2.5 rounded-lg hover:bg-amber-300 transition-colors flex justify-center items-center gap-1 shadow-md text-xs"
-            >
-              <svg className="w-3.5 h-3.5 fill-current flex-shrink-0" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-              <span>Xem ngay</span>
-            </Link>
-
-            <button
-              type="button"
-              className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
-              title="Thêm vào yêu thích"
-            >
-              <span className="text-red-400 text-sm leading-none">♥</span> Thích
-            </button>
-
-            <Link
-              to={`/movie/${id}`}
-              onClick={handleTrackClick}
-              className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
-              title="Xem chi tiết phim"
-            >
-              <span className="text-gray-300 text-xs leading-none">ℹ</span> Chi tiết
-            </Link>
-          </div>
-
-          {/* Metadata Badges Row */}
-          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5 mb-2 text-[9px] sm:text-[10px] font-semibold">
-            <span className="px-1.5 py-0.5 rounded border border-amber-400/80 text-amber-400 bg-amber-400/10">
-              ★ {imdb} IMDb
-            </span>
-            <span className="px-1.5 py-0.5 rounded border border-gray-500 bg-gray-800 text-gray-200">
-              {ageRating}
-            </span>
-            <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-              {year}
-            </span>
-            <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-              {season}
-            </span>
-            <span className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-              {episodesStatus}
-            </span>
-          </div>
-
-          {/* Genres Footer Text Row */}
-          <div className="text-[9px] sm:text-[10px] text-gray-400 font-medium truncate">
-            {Array.isArray(genres) ? genres.join(' • ') : genres}
-          </div>
-
-        </div>
-      </div>
+      )}
     </div>
   );
 };

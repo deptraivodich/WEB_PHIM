@@ -53,9 +53,13 @@ const ClientRouters = () => {
           <Route path="/the-loai" element={<RequireAuth><CategoryPage /></RequireAuth>} />
           <Route path="/category" element={<RequireAuth><CategoryPage /></RequireAuth>} />
           <Route path="/genres" element={<RequireAuth><CategoryPage /></RequireAuth>} />
-          <Route path="/search" element={<RequireAuth><CategoryPage /></RequireAuth>} />
-          <Route path="/movie/:id" element={<RequireAuth><MovieDetailPage /></RequireAuth>} />
+          {/* SEO Slug Routing */}
+          <Route path="/movie/:slug" element={<RequireAuth><MovieDetailPage /></RequireAuth>} />
+          <Route path="/movie/:slug/:episode" element={<RequireAuth><WatchPage /></RequireAuth>} />
+          {/* Legacy fallback routes for backward compatibility */}
           <Route path="/watch/:id" element={<RequireAuth><WatchPage /></RequireAuth>} />
+          <Route path="/watch/:id/:episode" element={<RequireAuth><WatchPage /></RequireAuth>} />
+          <Route path="/search" element={<RequireAuth><CategoryPage /></RequireAuth>} />
           <Route path="*" element={<RequireAuth><NotFoundPage /></RequireAuth>} />
         </Routes>
       </Suspense>

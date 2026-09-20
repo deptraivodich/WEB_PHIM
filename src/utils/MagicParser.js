@@ -19,6 +19,9 @@ const COLUMN_ALIASES = {
   imdb: ['imdb', 'điểm imdb', 'diem imdb', 'điểm', 'score', 'đánh giá'],
   year: ['năm', 'nam', 'year', 'năm phát hành', 'release_year'],
   country: ['quốc gia', 'quoc gia', 'country', 'quốc gia phát hành'],
+  director: ['đạo diễn', 'dao dien', 'director', 'đạo diễn phim', 'daodien'],
+  status: ['thông tin', 'thong tin', 'status', 'tình trạng', 'tinh trang'],
+  episodeCurrent: ['tập hiện tại', 'tap hien tai', 'episode_current', 'tập mới nhất', 'current_episode', 'hien tai', 'taphientai'],
   genres: ['thể loại', 'the loai', 'genres', 'genre', 'danh mục', 'category', 'chuyên mục'],
   ageRating: ['độ tuổi', 'do tuoi', 'agerating', 'tuổi', 'phân loại', 'age', 'rating_age'],
   quality: ['chất lượng', 'chat luong', 'quality', 'định dạng', 'resolution'],
@@ -138,6 +141,7 @@ export const parseTSV = (rawText) => {
         imdb: cleanImdbScore(rawObject.imdb),
         year: (rawObject.year || new Date().getFullYear().toString()).trim(),
         country: (rawObject.country || '').trim(),
+        director: (rawObject.director || 'Đang cập nhật').trim(),
         genres: genresArray.length > 0 ? genresArray : ['Action', 'Fantasy'],
         category: genresArray.length > 0 ? genresArray.join(', ') : 'Action, Fantasy',
         quality: (rawObject.quality || '4K UltraHD').trim(),
@@ -147,9 +151,10 @@ export const parseTSV = (rawText) => {
         description: (rawObject.description || '').trim(),
         m3u8Url: epUrl, // First episode URL as default stream
         episodes: epUrl ? [{ name: String(epName), url: epUrl }] : [],
-        episodesStatus: `Tập ${epName}`,
+        episodesStatus: (rawObject.episodeCurrent || `Tập ${epName}`).trim(),
+        episodeCurrent: (rawObject.episodeCurrent || `Tập ${epName}`).trim(),
         episodesCount: `1 Tập`,
-        status: 'Active',
+        status: (rawObject.status || 'ongoing').trim(),
         createdAt: new Date().toISOString(),
         // Validation flags for UI
         isValid: Boolean(titleValue && epUrl),
@@ -175,7 +180,10 @@ export const parseTSV = (rawText) => {
 
         // Update counts and status dynamically
         currentMovie.episodesCount = `${currentMovie.episodes.length} Tập`;
-        currentMovie.episodesStatus = `Tập hoàn tất (${currentMovie.episodes.length}/${currentMovie.episodes.length})`;
+        if (!currentMovie.episodeCurrent || currentMovie.episodeCurrent.startsWith('Tập ')) {
+          currentMovie.episodesStatus = `Tập ${currentMovie.episodes.length}`;
+          currentMovie.episodeCurrent = `Tập ${currentMovie.episodes.length}`;
+        }
         
         // Ensure default stream URL is set if it was previously empty
         if (!currentMovie.m3u8Url) {
@@ -193,14 +201,15 @@ export const parseTSV = (rawText) => {
 };
 
 /**
- * Example template string generator matching User's Excel Series structure with 'Ảnh bìa' column
+ * Example template string generator matching User's Excel Series structure with 12 columns standard:
+ * Tên Phim | Tên Gốc | Tập | Link Video | Ảnh bìa | Điểm IMDb | Năm | Quốc Gia | Đạo Diễn | Thông Tin | Tập hiện tại | Thể Loại
  */
 export const getTSVTemplateExample = () => {
-  return `Tên Phim\tTên Gốc\tTập\tLink Video\tẢnh bìa\tĐiểm IMDb\tNăm\tQuốc Gia\tThể Loại
-Thất Nghiệp Chuyển Sinh (Phần 3)\tMushoku Tensei: Jobless Reincarnation (Season 3)\t1\thttps://v7.kkphimplayer7.com/20260704/17WYGn3j/index.m3u8\thttps://images.unsplash.com/photo-1534447677768-be436bb09401?w=600&auto=format&fit=crop&q=80\t8.2 /10\t2026\tNhật Bản\tFantasy, Ecchi, Drama, Adventure, Magic, Isekai
-\t\t2\thttps://v7.kkphimplayer7.com/20260704/hr8ykSk2/index.m3u8\t\t\t\t\t
-\t\t3\thttps://v7.kkphimplayer7.com/20260712/IfhlTVwT/index.m3u8\t\t\t\t\t
-\t\t4\thttps://v7.kkphimplayer7.com/20260719/QS07vokj/index.m3u8\t\t\t\t\t
-\t\t5\thttps://v7.kkphimplayer7.com/20260726/lhxZcA50/index.m3u8\t\t\t\t\t
-Dune: Hành Tinh Cát 2\tDune: Part Two\t1\thttps://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8\thttps://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1200&auto=format&fit=crop&q=80\t8.6\t2024\tMỹ\tAction, Sci-Fi, Adventure`;
+  return `Tên Phim\tTên Gốc\tTập\tLink Video\tẢnh bìa\tĐiểm IMDb\tNăm\tQuốc Gia\tĐạo Diễn\tThông Tin\tTập hiện tại\tThể Loại
+Thất Nghiệp Chuyển Sinh (Phần 3)\tMushoku Tensei: Jobless Reincarnation (Season 3)\t1\thttps://v7.kkphimplayer7.com/20260704/17WYGn3j/index.m3u8\thttps://images.unsplash.com/photo-1534447677768-be436bb09401?w=600&auto=format&fit=crop&q=80\t8.2 /10\t2026\tNhật Bản\tHiroki Hirano\tongoing\tTập 5\tFantasy, Ecchi, Drama, Adventure, Magic, Isekai
+\t\t2\thttps://v7.kkphimplayer7.com/20260704/hr8ykSk2/index.m3u8\t\t\t\t\t\t\t\t
+\t\t3\thttps://v7.kkphimplayer7.com/20260712/IfhlTVwT/index.m3u8\t\t\t\t\t\t\t\t
+\t\t4\thttps://v7.kkphimplayer7.com/20260719/QS07vokj/index.m3u8\t\t\t\t\t\t\t\t
+\t\t5\thttps://v7.kkphimplayer7.com/20260726/lhxZcA50/index.m3u8\t\t\t\t\t\t\t\t
+Dune: Hành Tinh Cát 2\tDune: Part Two\t1\thttps://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8\thttps://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1200&auto=format&fit=crop&q=80\t8.6\t2024\tMỹ\tDenis Villeneuve\tcompleted\tHoàn Tất (1/1)\tAction, Sci-Fi, Adventure`;
 };

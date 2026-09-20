@@ -10,8 +10,8 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: default_password
     ports:
-      - "8123:8123"  # HTTP interface
-      - "9000:9000"  # Native interface
+      - "8123:8123" # HTTP interface
+      - "9000:9000" # Native interface
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql
@@ -20,7 +20,7 @@ services:
     #    limits:
     #      memory: 1.5G
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8123/ping" ]
       interval: 10s
       timeout: 10s
       retries: 15
@@ -40,7 +40,7 @@ services:
       CLICKHOUSE_PASSWORD: default_password
       BATCH_SIZE: 50
       FLUSH_INTERVAL_SECONDS: 5
-      GEMINI_API_KEY: AQ.Ab8RN6K1oxnnbhunF2a5DHUMMaOIW7YNgL5Ha_-DJFysSXDPpw
+      GEMINI_API_KEY: AQ.Ab8RN6L74oCD-TqJGjwvs4677JijqhZKN7Ex4M-MKdI2KIGK8A
 
     ports:
       - "8000:8000"
