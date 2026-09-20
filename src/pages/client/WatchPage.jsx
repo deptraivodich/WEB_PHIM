@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import VideoPlayer from '../../components/player/VideoPlayer';
 import Navbar from '../../components/common/Navbar';
 import { getMovies } from '../../services/movieService';
@@ -11,20 +11,29 @@ import {
   formatDurationToMinutesSeconds 
 } from '../../services/historyService';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { generateSlug } from '../../utils/slugUtils';
 import { trackEvent } from '../../services/telemetryService';
+import { recordMovieView, getMovieStats, toggleMovieLike } from '../../services/interactionService';
 
 const WatchPage = () => {
-  const { id } = useParams();
+  const { slug, episode, id } = useParams();
+  const targetSlug = slug || id;
+  const navigate = useNavigate();
   const { currentUser } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const episodeParam = searchParams.get('ep') || '1';
+  const rawEpisode = episode || searchParams.get('ep') || '1';
+  const episodeParam = String(rawEpisode).replace(/^tap-?/i, '') || '1';
   
   const playerRef = useRef(null);
   const lastSavedTimeRef = useRef(0);
+  const viewedMovieIdRef = useRef(null); // Ref track phim đã tăng view chưa trong phiên
   const [currentMovie, setCurrentMovie] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeEpisodeState, setActiveEpisodeState] = useState(episodeParam);
   const [resumePrompt, setResumePrompt] = useState(null); // { savedTime: number, formattedTime: string }
+  const [viewsCount, setViewsCount] = useState(0);
+  const [isFavorite, setIsFavorite] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setActiveEpisodeState(episodeParam);
@@ -37,15 +46,40 @@ const WatchPage = () => {
 
       try {
         const moviesList = await getMovies();
-        const found = (moviesList || []).find(m => String(m.id) === String(id) || String(m.id) === String(id?.trim()));
+        const found = (moviesList || []).find(m => 
+          generateSlug(m.title) === targetSlug || 
+          String(m.id) === String(targetSlug) ||
+          generateSlug(m.originalTitle) === targetSlug
+        );
 
-        if (found) {
-          setCurrentMovie(found);
-        } else if (moviesList && moviesList.length > 0) {
-          setCurrentMovie(moviesList[0]);
+        const activeMovie = found || (moviesList && moviesList.length > 0 ? moviesList[0] : null);
+        if (activeMovie) {
+          setCurrentMovie(activeMovie);
+          const movieId = String(activeMovie.id);
+          const username = currentUser?.username || 'anonymous';
+
+          // Đồng bộ thống kê tương tác (Views, Likes)
+          getMovieStats(movieId, username).then(stats => {
+            if (stats) {
+              setViewsCount(stats.views || 0);
+              setIsFavorite(stats.is_liked || false);
+            }
+          });
+
+          // LOGIC TĂNG LƯỢT XEM (NHIỆM VỤ 2):
+          // Lượt xem chỉ tăng thêm +1 khi user vừa truy cập vào giao diện Xem Phim từ trang khác.
+          // Nếu đang ở màn hình xem phim mà bấm chuyển tập (vd: Tập 1 sang Tập 2), KHÔNG ĐƯỢC tăng view.
+          if (viewedMovieIdRef.current !== movieId) {
+            viewedMovieIdRef.current = movieId;
+            recordMovieView(movieId).then(res => {
+              if (res && typeof res.views === 'number') {
+                setViewsCount(res.views);
+              }
+            });
+          }
         }
       } catch (err) {
-        console.error("Error loading watch movie for ID:", id, err);
+        console.error("Error loading watch movie for targetSlug:", targetSlug, err);
       } finally {
         setIsLoading(false);
       }
@@ -53,7 +87,7 @@ const WatchPage = () => {
 
     fetchWatchMovie();
     window.scrollTo(0, 0);
-  }, [id]);
+  }, [targetSlug, currentUser?.username]);
 
   // Resolve episodes list safely
   const movieEpisodesList = currentMovie?.episodes || [];
@@ -61,16 +95,25 @@ const WatchPage = () => {
     ? movieEpisodesList
     : [{ name: '1', url: currentMovie?.m3u8Url || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8' }];
 
-  const activeEpisodeObj = episodes.find(ep => String(ep.name || ep.number) === String(activeEpisodeState)) || episodes[0];
+  const cleanEpState = String(activeEpisodeState).replace(/^tap-?/i, '');
+  const activeEpisodeObj = episodes.find(ep => {
+    const epNameStr = String(ep.name || ep.number || '');
+    const cleanEpName = epNameStr.replace(/^tap-?/i, '');
+    return epNameStr === String(activeEpisodeState) || cleanEpName === cleanEpState;
+  }) || episodes[0];
   const activeStreamUrl = activeEpisodeObj?.url || activeEpisodeObj?.m3u8Url || currentMovie?.m3u8Url || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-  const currentEpName = activeEpisodeObj?.name || activeEpisodeObj?.number || activeEpisodeState;
+  const currentEpName = activeEpisodeObj?.name || activeEpisodeObj?.number || cleanEpState;
   const formattedTitle = formatVietnameseSentenceCase(currentMovie?.title || 'Phim mới');
 
   // Episode Pagination / Chunking (Max 100 episodes per range tab)
   const CHUNK_SIZE = 100;
   const totalEpisodesCount = episodes.length;
   const chunkCount = Math.ceil(totalEpisodesCount / CHUNK_SIZE);
-  const activeEpIndex = episodes.findIndex(ep => String(ep.name || ep.number) === String(currentEpName));
+  const activeEpIndex = episodes.findIndex(ep => {
+    const epNameStr = String(ep.name || ep.number || '');
+    const cleanEpName = epNameStr.replace(/^tap-?/i, '');
+    return epNameStr === String(currentEpName) || cleanEpName === String(currentEpName).replace(/^tap-?/i, '');
+  });
   const activeChunkIndex = activeEpIndex >= 0 ? Math.floor(activeEpIndex / CHUNK_SIZE) : 0;
 
   const [selectedRangeIndex, setSelectedRangeIndex] = useState(activeChunkIndex);
@@ -119,23 +162,26 @@ const WatchPage = () => {
     }
   }, [currentUser?.username, id, currentEpName]);
 
-  const handleVideoPlay = useCallback(() => {
-    trackEvent({
-      userId: currentUser?.username || 'anonymous',
-      movieId: id,
-      actionType: 'play'
-    });
-  }, [id, currentUser?.username]);
+  // Telemetry Heartbeat / Events
+  const handleVideoPlay = () => {
+    if (currentMovie?.id) {
+      trackEvent({
+        movieId: currentMovie.id,
+        actionType: 'play',
+        userId: currentUser?.username || 'anonymous'
+      });
+    }
+  };
 
-  const handleVideoPause = useCallback((currentTime) => {
-    trackEvent({
-      userId: currentUser?.username || 'anonymous',
-      movieId: id,
-      actionType: 'pause',
-      watchTime: currentTime,
-      videoQuality: currentMovie?.quality || '1080p'
-    });
-  }, [id, currentUser?.username, currentMovie]);
+  const handleVideoPause = () => {
+    if (currentMovie?.id) {
+      trackEvent({
+        movieId: currentMovie.id,
+        actionType: 'pause',
+        userId: currentUser?.username || 'anonymous'
+      });
+    }
+  };
 
   // Track pause/exit when component unmounts
   useEffect(() => {
@@ -155,13 +201,11 @@ const WatchPage = () => {
 
   // Action: Resume from saved position
   const handleResumeWatching = () => {
-    if (!resumePrompt) return;
-    const targetTime = resumePrompt.savedTime;
-    setResumePrompt(null);
-    if (playerRef.current) {
-      playerRef.current.seekTo(targetTime);
+    if (resumePrompt && playerRef.current) {
+      playerRef.current.seekTo(resumePrompt.savedTime);
       playerRef.current.play();
     }
+    setResumePrompt(null);
   };
 
   // Action: Restart from beginning (0s)
@@ -188,9 +232,24 @@ const WatchPage = () => {
     }
   };
 
+  const handleToggleFavorite = async () => {
+    if (!currentMovie?.id) return;
+    const username = currentUser?.username || 'anonymous';
+    const res = await toggleMovieLike(currentMovie.id, username);
+    setIsFavorite(res.is_liked);
+  };
+
+  const handleShare = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
   const handleSelectEpisode = (epNum) => {
-    setActiveEpisodeState(String(epNum));
-    setSearchParams({ ep: String(epNum) });
+    const cleanNum = String(epNum).replace(/^tap-?/i, '');
+    setActiveEpisodeState(cleanNum);
+    const movieSlug = generateSlug(currentMovie?.title || '') || targetSlug;
+    navigate(`/movie/${movieSlug}/tap-${cleanNum}`);
   };
 
   if (isLoading || !currentMovie) {
@@ -211,6 +270,8 @@ const WatchPage = () => {
     year = '2024'
   } = currentMovie;
 
+  const movieSlug = generateSlug(currentMovie?.title || '') || activeId;
+
   return (
     <div className="min-h-screen bg-background text-white pb-20">
       <main className="pt-24 px-4 md:px-12 max-w-7xl mx-auto space-y-6">
@@ -218,7 +279,7 @@ const WatchPage = () => {
         <div className="flex items-center space-x-2 text-sm text-gray-400">
           <Link to="/" className="hover:text-neon-red transition-colors">Trang chủ</Link>
           <span>/</span>
-          <Link to={`/movie/${activeId}`} className="hover:text-neon-cyan transition-colors">{formattedTitle}</Link>
+          <Link to={`/movie/${movieSlug}`} className="hover:text-neon-cyan transition-colors">{formattedTitle}</Link>
           <span>/</span>
           <span className="text-amber-400 font-bold">Tập {currentEpName}</span>
         </div>
@@ -249,14 +310,15 @@ const WatchPage = () => {
                 onClick={handleResumeWatching}
                 className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-black font-black text-xs shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5 hover:scale-105"
               >
-                <span>▶ Tiếp tục</span>
+                <span>Tiếp tục xem</span>
+                <span>▶</span>
               </button>
               <button
                 type="button"
                 onClick={handleRestartFromBeginning}
-                className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-gray-200 hover:text-white border border-white/15 font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-gray-300 hover:text-white text-xs font-bold transition-all cursor-pointer"
               >
-                <span>🔄 Từ đầu</span>
+                Xem từ đầu (0:00)
               </button>
               <button
                 type="button"
@@ -298,20 +360,78 @@ const WatchPage = () => {
             </p>
           </div>
 
-          <div className="flex items-center space-x-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {/* UI Nút Lượt xem: hiển thị số Lượt xem đồng bộ toàn cầu (bắt đầu từ 0) */}
+            <div 
+              title={`Tổng lượt xem toàn cầu: ${viewsCount.toLocaleString()} lượt`}
+              className="h-10 px-3 rounded-full bg-surface-card text-neon-cyan border border-glass-border flex items-center gap-1.5 shadow-sm text-xs font-bold select-none cursor-default"
+            >
+              <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+              </svg>
+              <span>{viewsCount.toLocaleString()}</span>
+            </div>
+
+            {/* Nút Yêu thích (giao diện giữ nguyên: chưa bấm viền xám, bấm rồi nền đỏ tim trắng, không hiện tổng tim) */}
+            <button 
+              type="button"
+              onClick={handleToggleFavorite}
+              title={isFavorite ? 'Đã yêu thích' : 'Thêm vào yêu thích'}
+              className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all duration-300 cursor-pointer ${
+                isFavorite 
+                  ? 'bg-neon-red text-white border-neon-red shadow-[0_0_15px_#e50914] scale-105' 
+                  : 'bg-surface-card text-gray-300 hover:text-white border-glass-border hover:border-neon-red/50 hover:bg-neon-red/20'
+              }`}
+            >
+              <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+              </svg>
+            </button>
+
+            {/* Nút Bình luận dẫn về trang chi tiết bình luận của phim */}
+            <Link 
+              to={`/movie/${movieSlug}#comments-section`}
+              className="h-10 px-3.5 rounded-full bg-surface-card text-gray-300 hover:text-white border border-glass-border flex items-center gap-1.5 shadow-sm text-xs font-semibold transition-all hover:bg-white/10"
+              title="Xem bình luận & đánh giá"
+            >
+              <svg className="w-4 h-4 fill-current text-neon-cyan" viewBox="0 0 24 24">
+                <path d="M21.99 4c0-1.1-.89-2-1.99-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4-.01-18zM18 14H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
+              </svg>
+              <span>Bình luận</span>
+            </Link>
+
+            {/* Nút Chia sẻ link phim */}
+            <button 
+              type="button"
+              onClick={handleShare}
+              title="Sao chép liên kết tập phim"
+              className="relative h-10 px-3.5 rounded-full bg-surface-card text-gray-300 hover:text-white border border-glass-border flex items-center gap-1.5 shadow-sm text-xs font-semibold transition-all hover:bg-white/10 cursor-pointer"
+            >
+              <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/>
+              </svg>
+              <span>{copied ? 'Đã sao chép!' : 'Chia sẻ'}</span>
+              {copied && (
+                <span className="absolute -top-9 left-1/2 transform -translate-x-1/2 px-2 py-0.5 bg-neon-cyan text-black font-extrabold text-[10px] rounded whitespace-nowrap shadow-lg">
+                  Đã copy!
+                </span>
+              )}
+            </button>
+
+            {/* Player Test Controls */}
             <button 
               type="button"
               onClick={handlePlayExternal}
-              className="px-4 py-2 rounded-xl bg-neon-red/20 hover:bg-neon-red/30 border border-neon-red/40 text-neon-red text-sm font-semibold transition-all cursor-pointer"
+              className="px-3.5 py-2 rounded-xl bg-neon-red/20 hover:bg-neon-red/30 border border-neon-red/40 text-neon-red text-xs font-semibold transition-all cursor-pointer"
             >
               ▶ Play()
             </button>
             <button 
               type="button"
               onClick={handleSeekForward}
-              className="px-4 py-2 rounded-xl bg-neon-cyan/20 hover:bg-neon-cyan/30 border border-neon-cyan/40 text-neon-cyan text-sm font-semibold transition-all cursor-pointer"
+              className="px-3.5 py-2 rounded-xl bg-neon-cyan/20 hover:bg-neon-cyan/30 border border-neon-cyan/40 text-neon-cyan text-xs font-semibold transition-all cursor-pointer"
             >
-              ⏩ Seek +15s
+              ⏩ +15s
             </button>
           </div>
         </div>
@@ -333,13 +453,14 @@ const WatchPage = () => {
           {chunkCount > 1 && (
             <div className="flex flex-wrap gap-2.5 pt-2 pb-3 border-b border-white/10">
               {Array.from({ length: chunkCount }).map((_, chunkIdx) => {
+                const chunkTabKey = `chunk-range-tab-${chunkIdx}`;
                 const startEp = chunkIdx * CHUNK_SIZE + 1;
                 const endEp = Math.min(totalEpisodesCount, (chunkIdx + 1) * CHUNK_SIZE);
                 const isSelectedRange = selectedRangeIndex === chunkIdx;
 
                 return (
                   <button
-                    key={chunkIdx}
+                    key={chunkTabKey}
                     type="button"
                     onClick={() => setSelectedRangeIndex(chunkIdx)}
                     className={`px-4 py-2 rounded-xl text-xs font-black transition-all border cursor-pointer ${
@@ -361,12 +482,13 @@ const WatchPage = () => {
               .slice(selectedRangeIndex * CHUNK_SIZE, (selectedRangeIndex + 1) * CHUNK_SIZE)
               .map((ep, idxInChunk) => {
                 const globalIndex = selectedRangeIndex * CHUNK_SIZE + idxInChunk;
+                const epKey = `watch-ep-btn-${ep.id || globalIndex}-${globalIndex}`;
                 const epNum = ep.name || ep.number || (globalIndex + 1);
                 const isActive = String(epNum) === String(currentEpName);
 
                 return (
                   <button
-                    key={globalIndex}
+                    key={epKey}
                     type="button"
                     onClick={() => handleSelectEpisode(epNum)}
                     className={`py-3 px-2 rounded-xl text-center text-xs font-bold transition-all border cursor-pointer flex flex-col items-center justify-center gap-0.5 ${

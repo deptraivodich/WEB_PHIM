@@ -323,9 +323,10 @@ const CategoryPage = () => {
         {/* MOVIE RESULTS GRID */}
         {isLoading ? (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-3 sm:gap-4">
-            {Array.from({ length: 12 }).map((_, idx) => (
-              <MovieCard key={idx} isLoading={true} layoutMode="grid" />
-            ))}
+            {Array.from({ length: 12 }).map((_, idx) => {
+              const skeletonKey = `cat-skel-${idx}`;
+              return <MovieCard key={skeletonKey} isLoading={true} layoutMode="grid" showHoverPopup={false} />;
+            })}
           </div>
         ) : filteredMovies.length === 0 ? (
           <div className="glass-panel p-12 rounded-3xl border border-glass-border text-center space-y-4 max-w-xl mx-auto shadow-2xl">
@@ -355,15 +356,19 @@ const CategoryPage = () => {
           </div>
         ) : (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-3 sm:gap-4">
-            {filteredMovies.map((movie, idx) => (
-              <MovieCard 
-                key={movie.id} 
-                movie={movie} 
-                layoutMode="grid" 
-                isFirst={idx % 6 === 0} 
-                isLast={(idx + 1) % 6 === 0 || idx === filteredMovies.length - 1} 
-              />
-            ))}
+            {filteredMovies.map((movie, idx) => {
+              const movieCardKey = movie.id || `category-movie-${idx}`;
+              return (
+                <MovieCard 
+                  key={movieCardKey} 
+                  movie={movie} 
+                  layoutMode="grid" 
+                  isFirst={idx % 6 === 0} 
+                  isLast={(idx + 1) % 6 === 0 || idx === filteredMovies.length - 1} 
+                  showHoverPopup={false}
+                />
+              );
+            })}
           </div>
         )}
 

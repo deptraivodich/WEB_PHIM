@@ -150,29 +150,67 @@ export const saveStoredMovies = (moviesList) => {
  * 1. READ ALL MOVIES: Fetch all movies directly from Cloud Firestore
  */
 export const getMovies = async () => {
+  let movies = [];
   try {
     const querySnapshot = await withTimeout(getDocs(collection(db, COLLECTION_NAME)), 3500);
     
     if (querySnapshot && !querySnapshot.empty) {
-      const fetchedMovies = querySnapshot.docs.map(docSnap => ({
+      movies = querySnapshot.docs.map(docSnap => ({
         id: docSnap.id,
         ...docSnap.data()
       }));
-      
-      // Sort newest created first in memory
-      fetchedMovies.sort((a, b) => {
-        const timeA = new Date(a.createdAt || a.updatedAt || 0).getTime();
-        const timeB = new Date(b.createdAt || b.updatedAt || 0).getTime();
-        return timeB - timeA;
-      });
-
-      saveStoredMovies(fetchedMovies);
-      return fetchedMovies;
     }
   } catch (error) {
     console.warn("Firestore getMovies fallback to local cache:", error.message);
   }
-  return getStoredMovies();
+
+  if (movies.length === 0) {
+    movies = getStoredMovies();
+  }
+
+  // Tự động gộp dữ liệu mới nhất (đạo diễn, tập hiện tại, số tập) từ Backend SQLite nếu có
+  try {
+    const backendRes = await withTimeout(fetch('http://localhost:8000/api/movies?limit=300'), 1500);
+    if (backendRes.ok) {
+      const backendJson = await backendRes.json();
+      const backendMovies = backendJson.movies || [];
+      if (backendMovies.length > 0) {
+        const backendMap = new Map();
+        for (const bm of backendMovies) {
+          if (bm.id) backendMap.set(String(bm.id), bm);
+        }
+
+        movies = movies.map(m => {
+          const bm = backendMap.get(String(m.id));
+          if (bm) {
+            return {
+              ...m,
+              director: bm.director || m.director || '',
+              country: bm.country || m.country || '',
+              status: bm.status || m.status || 'ongoing',
+              episodeCurrent: bm.episode_current || m.episodeCurrent || m.episodesStatus || '',
+              episodesStatus: bm.episode_current || m.episodesStatus || '',
+              episodesCount: bm.episodes_count || m.episodesCount || '',
+              episodes: (Array.isArray(bm.episodes) && bm.episodes.length > (m.episodes?.length || 0)) ? bm.episodes : (m.episodes || [])
+            };
+          }
+          return m;
+        });
+      }
+    }
+  } catch (backendErr) {
+    // Backend offline -> Tiếp tục với dữ liệu hiện tại
+  }
+
+  // Sort newest created first in memory
+  movies.sort((a, b) => {
+    const timeA = new Date(a.createdAt || a.updatedAt || 0).getTime();
+    const timeB = new Date(b.createdAt || b.updatedAt || 0).getTime();
+    return timeB - timeA;
+  });
+
+  saveStoredMovies(movies);
+  return movies;
 };
 
 /**

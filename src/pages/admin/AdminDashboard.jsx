@@ -1,14 +1,66 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import MagicImport from '../../components/admin/MagicImport';
 import TrollLogoutModal from '../../components/ui/TrollLogoutModal';
 import { Link, useNavigate } from 'react-router-dom';
 import dragonLogo from '../../assets/dragon-logo.png';
+import { getMovies } from '../../services/movieService';
+import { getAdminStats } from '../../services/interactionService';
 
 const AdminDashboard = () => {
   const { currentUser, logout } = useAuth();
   const [isTrollModalOpen, setIsTrollModalOpen] = useState(false);
   const navigate = useNavigate();
+
+  // Real Statistics State (Nhiệm vụ 5)
+  const [stats, setStats] = useState({ total_movies: 0, today_views: 0 });
+  const [isLoadingStats, setIsLoadingStats] = useState(true);
+
+  const loadRealStats = useCallback(async () => {
+    setIsLoadingStats(true);
+    try {
+      // 1. Lấy danh sách phim thực tế từ Firebase / Local Cache
+      const moviesList = await getMovies();
+      const currentMovieCount = Array.isArray(moviesList) ? moviesList.length : 0;
+
+      // 2. Gọi API Backend để lấy thống kê chuẩn xác (Tổng phim và Lượt xem hôm nay)
+      const data = await getAdminStats(currentMovieCount);
+      setStats({
+        total_movies: data.total_movies ?? currentMovieCount,
+        today_views: data.today_views ?? 0
+      });
+
+      // 3. Đồng bộ dữ liệu phim sang SQLite backend trong nền nếu có
+      if (Array.isArray(moviesList) && moviesList.length > 0) {
+        fetch('http://localhost:8000/api/movies/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ movies: moviesList })
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.error("Lỗi khi tải thống kê thực tế cho Admin Dashboard:", err);
+    } finally {
+      setIsLoadingStats(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRealStats();
+
+    // Lắng nghe sự kiện cập nhật phim hoặc tương tác để reload số liệu thực tế
+    const handleUpdate = () => {
+      loadRealStats();
+    };
+
+    window.addEventListener('210loliphim_movies_updated', handleUpdate);
+    window.addEventListener('210loliphim_interactions_updated', handleUpdate);
+
+    return () => {
+      window.removeEventListener('210loliphim_movies_updated', handleUpdate);
+      window.removeEventListener('210loliphim_interactions_updated', handleUpdate);
+    };
+  }, [loadRealStats]);
 
   return (
     <div className="min-h-screen bg-background text-gray-100 flex flex-col">
@@ -69,23 +121,42 @@ const AdminDashboard = () => {
           </div>
         </div>
 
-        {/* Stats Grid */}
+        {/* Stats Grid - Hiển thị số liệu thực tế từ Backend & DB */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Ô 1: Tổng Phim Quản Lý (Dữ liệu thật từ Database) */}
           <div className="p-5 glass-panel rounded-xl border-l-4 border-neon-red space-y-1">
             <p className="text-xs text-gray-400 font-semibold uppercase">Tổng Phim Quản Lý</p>
-            <p className="text-2xl font-black text-white">1,248</p>
+            <p className="text-2xl font-black text-white">
+              {isLoadingStats ? (
+                <span className="text-gray-500 animate-pulse text-lg">Đang tải...</span>
+              ) : (
+                stats.total_movies.toLocaleString()
+              )}
+            </p>
             <Link to="/admin/movies" className="text-[11px] text-neon-red hover:underline block pt-1">Quản lý ngay →</Link>
           </div>
+
+          {/* Ô 2: Luồng KKPhim Active */}
           <div className="p-5 glass-panel rounded-xl border-l-4 border-neon-cyan space-y-1">
             <p className="text-xs text-gray-400 font-semibold uppercase">Luồng KKPhim Active</p>
             <p className="text-2xl font-black text-white">98.5%</p>
             <span className="text-[11px] text-emerald-400 block pt-1">Hoạt động bình thường</span>
           </div>
+
+          {/* Ô 3: Lượt Xem Hôm Nay (Dữ liệu thật theo ngày hôm nay từ view_logs / logs) */}
           <div className="p-5 glass-panel rounded-xl border-l-4 border-amber-500 space-y-1">
             <p className="text-xs text-gray-400 font-semibold uppercase">Lượt Xem Hôm Nay</p>
-            <p className="text-2xl font-black text-white">45,210</p>
-            <span className="text-[11px] text-amber-400 block pt-1">↑ +14.2% so với hôm qua</span>
+            <p className="text-2xl font-black text-white">
+              {isLoadingStats ? (
+                <span className="text-gray-500 animate-pulse text-lg">Đang tải...</span>
+              ) : (
+                stats.today_views.toLocaleString()
+              )}
+            </p>
+            <span className="text-[11px] text-amber-400 block pt-1">Lượt xem thực tế hôm nay</span>
           </div>
+
+          {/* Ô 4: Trạng Thái Firestore */}
           <div className="p-5 glass-panel rounded-xl border-l-4 border-emerald-500 space-y-1">
             <p className="text-xs text-gray-400 font-semibold uppercase">Trạng Thái Firestore</p>
             <p className="text-2xl font-black text-emerald-400">Connected</p>

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { getMovies, addMovie, updateMovie, deleteMovie, syncAllLocalMoviesToCloud } from '../../services/movieService';
+import { runAutoUpdate } from '../../services/autoCrawlService';
 import MagicImport from '../../components/admin/MagicImport';
 import HomepageCMS from '../../components/admin/HomepageCMS';
+import AutoSyncModal from '../../components/admin/AutoSyncModal';
 import dragonLogo from '../../assets/dragon-logo.png';
 import { ANIME_GENRES } from '../../components/common/Navbar';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
@@ -225,6 +227,14 @@ const MovieManagementPage = () => {
 
   // Cloud Sync State
   const [isSyncing, setIsSyncing] = useState(false);
+  // Auto-Sync Modal State
+  const [isAutoSyncModalOpen, setIsAutoSyncModalOpen] = useState(false);
+  const [isAutoCrawling, setIsAutoCrawling] = useState(false);
+
+  // Manual Trigger: Open AutoSyncModal
+  const handleManualAutoCrawl = () => {
+    setIsAutoSyncModalOpen(true);
+  };
 
   // Sync all local movies to Cloud Firestore
   const handleSyncToCloud = async () => {
@@ -262,6 +272,17 @@ const MovieManagementPage = () => {
 
   useEffect(() => {
     fetchMoviesList();
+
+    // Lắng nghe sự kiện cào tự động hoàn tất từ App.jsx / autoCrawlService
+    const handleMoviesUpdated = () => {
+      console.log('[Admin] Nhận được tín hiệu có phim mới được cập nhật, tải lại bảng dữ liệu...');
+      fetchMoviesList();
+    };
+
+    window.addEventListener('210loliphim_movies_updated', handleMoviesUpdated);
+    return () => {
+      window.removeEventListener('210loliphim_movies_updated', handleMoviesUpdated);
+    };
   }, []);
 
   // Filtered & Searched Movies with safe Defensive Programming
@@ -323,9 +344,14 @@ const MovieManagementPage = () => {
     }
 
     const genreList = getGenresArray(movie);
+    const defaultEpCurrent = movie.episodeCurrent || movie.episodesStatus || (eps.length > 0 ? `Tập ${eps.length}` : 'Tập 1');
 
     setEditingMovie({
       ...movie,
+      director: movie.director || '',
+      status: movie.status || 'ongoing',
+      episodeCurrent: defaultEpCurrent,
+      episodesStatus: defaultEpCurrent,
       episodes: eps,
       genres: genreList,
       category: genreList.join(', ')
@@ -380,13 +406,17 @@ const MovieManagementPage = () => {
     const cleanedEpisodes = (editingMovie.episodes || []).filter(ep => ep && ep.url && ep.url.trim());
     const finalEpisodes = cleanedEpisodes.length > 0 ? cleanedEpisodes : [{ name: '1', url: editingMovie.m3u8Url || '' }];
     const formattedTitle = formatVietnameseSentenceCase(editingMovie.title);
+    const finalEpisodeCurrent = editingMovie.episodeCurrent || editingMovie.episodesStatus || (finalEpisodes.length > 0 ? `Tập ${finalEpisodes.length}` : 'Tập 1');
 
     const updatePayload = {
       ...editingMovie,
       title: formattedTitle,
+      director: editingMovie.director || '',
+      status: editingMovie.status || 'ongoing',
+      episodeCurrent: finalEpisodeCurrent,
+      episodesStatus: finalEpisodeCurrent,
       episodes: finalEpisodes,
       episodesCount: `${finalEpisodes.length} Tập`,
-      episodesStatus: `Tập hoàn tất (${finalEpisodes.length}/${finalEpisodes.length})`,
       m3u8Url: finalEpisodes[0]?.url || editingMovie.m3u8Url || '',
       genres: genreList,
       category: genreList.join(', ')
@@ -516,6 +546,14 @@ const MovieManagementPage = () => {
             </button>
             <button 
               type="button"
+              onClick={() => setIsAutoSyncModalOpen(true)}
+              className="px-3.5 py-2 rounded-lg text-xs font-black bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white shadow-lg flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+              title="Kích hoạt bảng điều khiển Cào Phim Tự Động & Live Sync Log"
+            >
+              <span>⚡ Cào Phim Tự Động</span>
+            </button>
+            <button 
+              type="button"
               onClick={handleSyncToCloud}
               disabled={isSyncing}
               className="px-3.5 py-2 rounded-lg text-xs font-black bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white shadow-lg flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
@@ -613,9 +651,11 @@ const MovieManagementPage = () => {
                       {(paginatedMovies || []).map((movie, index) => {
                         const movieGenres = getGenresArray(movie);
                         const displayEpisodes = getEpisodeDisplay(movie?.episodes, movie?.episodesCount);
+                        const rowKey = movie?.id || `movie-row-${index}`;
+                        const movieStatus = String(movie?.status || '').toLowerCase().trim();
 
                         return (
-                          <tr key={movie?.id || index} className="hover:bg-white/5 transition-colors">
+                          <tr key={rowKey} className="hover:bg-white/5 transition-colors">
                             <td className="p-4 font-mono text-gray-500">{(currentPage - 1) * ITEMS_PER_PAGE + index + 1}</td>
                             
                             <td className="p-4">
@@ -639,19 +679,27 @@ const MovieManagementPage = () => {
                                 <span className="px-2 py-0.5 rounded text-[10px] bg-yellow-500/20 text-yellow-400 font-bold">★ {movie?.imdb || '8.0'}</span>
                                 <span className="px-2 py-0.5 rounded text-[10px] bg-neon-red/20 text-neon-red font-bold">{movie?.quality || '4K'}</span>
                               </div>
-                              <div className="text-[11px] text-gray-400">
-                                <span>{movie?.year || '2024'}</span> • <span>{displayEpisodes}</span>
+                              <div className="text-[11px] text-gray-300">
+                                <span>{movie?.year || '2024'}</span> • <span className="font-semibold text-neon-cyan">{movie?.episodeCurrent || movie?.episodesStatus || displayEpisodes}</span>
                               </div>
+                              {movie?.director && movie.director.toLowerCase() !== 'đang cập nhật' && (
+                                <div className="text-[10px] text-gray-400 truncate max-w-[180px]" title={`Đạo diễn: ${movie.director}`}>
+                                  🎬 {movie.director}
+                                </div>
+                              )}
                             </td>
 
                             {/* Multi-category badge display */}
                             <td className="p-4 max-w-[200px]">
                               <div className="flex flex-wrap gap-1">
-                                {movieGenres.slice(0, 3).map((g, i) => (
-                                  <span key={i} className="px-2 py-0.5 rounded bg-white/10 text-gray-200 text-[10px] border border-white/10 whitespace-nowrap">
-                                    {g}
-                                  </span>
-                                ))}
+                                {movieGenres.slice(0, 3).map((g, i) => {
+                                  const genreKey = `${movie?.id || index}-genre-${i}`;
+                                  return (
+                                    <span key={genreKey} className="px-2 py-0.5 rounded bg-white/10 text-gray-200 text-[10px] border border-white/10 whitespace-nowrap">
+                                      {g}
+                                    </span>
+                                  );
+                                })}
                                 {movieGenres.length > 3 && (
                                   <span className="px-1.5 py-0.5 rounded bg-neon-cyan/15 text-neon-cyan text-[9px] font-bold">
                                     +{movieGenres.length - 3}
@@ -661,9 +709,19 @@ const MovieManagementPage = () => {
                             </td>
 
                             <td className="p-4">
-                              <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-400 text-[11px] border border-emerald-500/30 font-bold">
-                                {movie?.status || 'Active'}
-                              </span>
+                              {movieStatus === 'completed' || movieStatus === 'hoàn tất' ? (
+                                <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-400 text-[11px] border border-emerald-500/30 font-bold">
+                                  ✓ Hoàn Tất
+                                </span>
+                              ) : movieStatus === 'ongoing' ? (
+                                <span className="px-2.5 py-1 rounded-md bg-cyan-500/20 text-cyan-300 text-[11px] border border-cyan-500/30 font-bold">
+                                  ⏳ Đang Chiếu
+                                </span>
+                              ) : (
+                                <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-400 text-[11px] border border-emerald-500/30 font-bold">
+                                  {movie?.status || 'Active'}
+                                </span>
+                              )}
                             </td>
 
                             <td className="p-4 text-right">
@@ -959,61 +1017,64 @@ const MovieManagementPage = () => {
 
                 {/* Episode Row Inputs */}
                 <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
-                  {(Array.isArray(editingMovie.episodes) ? editingMovie.episodes : []).map((ep, epIdx) => (
-                    <div key={epIdx} className="flex items-center gap-2 p-2 rounded-lg bg-black/40 border border-white/5">
-                      <div className="w-24 flex-shrink-0">
-                        <span className="text-[10px] text-gray-400 block mb-0.5">Tên tập</span>
-                        <input 
-                          type="text"
-                          placeholder="VD: 1 hoặc 01"
-                          value={ep?.name || ''}
-                          onChange={(e) => {
-                            const nextEps = [...editingMovie.episodes];
-                            nextEps[epIdx] = { ...nextEps[epIdx], name: e.target.value };
-                            setEditingMovie({ ...editingMovie, episodes: nextEps });
-                          }}
-                          className="w-full p-1.5 rounded bg-surface border border-glass-border text-white text-xs font-bold text-center"
-                        />
-                      </div>
+                  {(Array.isArray(editingMovie.episodes) ? editingMovie.episodes : []).map((ep, epIdx) => {
+                    const epKey = `edit-ep-${epIdx}-${ep?.name || ''}`;
+                    return (
+                      <div key={epKey} className="flex items-center gap-2 p-2 rounded-lg bg-black/40 border border-white/5">
+                        <div className="w-24 flex-shrink-0">
+                          <span className="text-[10px] text-gray-400 block mb-0.5">Tên tập</span>
+                          <input 
+                            type="text"
+                            placeholder="VD: 1 hoặc 01"
+                            value={ep?.name || ''}
+                            onChange={(e) => {
+                              const nextEps = [...editingMovie.episodes];
+                              nextEps[epIdx] = { ...nextEps[epIdx], name: e.target.value };
+                              setEditingMovie({ ...editingMovie, episodes: nextEps });
+                            }}
+                            className="w-full p-1.5 rounded bg-surface border border-glass-border text-white text-xs font-bold text-center"
+                          />
+                        </div>
 
-                      <div className="flex-1">
-                        <span className="text-[10px] text-gray-400 block mb-0.5">Link Video M3U8 Stream</span>
-                        <input 
-                          type="text"
-                          placeholder="https://.../video.m3u8"
-                          value={ep?.url || ''}
-                          onChange={(e) => {
-                            const nextEps = [...editingMovie.episodes];
-                            nextEps[epIdx] = { ...nextEps[epIdx], url: e.target.value };
-                            setEditingMovie({ 
-                              ...editingMovie, 
-                              episodes: nextEps,
-                              m3u8Url: nextEps[0]?.url || editingMovie.m3u8Url || '' 
-                            });
-                          }}
-                          className="w-full p-1.5 rounded bg-surface border border-glass-border text-neon-cyan text-xs font-mono"
-                        />
-                      </div>
+                        <div className="flex-1">
+                          <span className="text-[10px] text-gray-400 block mb-0.5">Link Video M3U8 Stream</span>
+                          <input 
+                            type="text"
+                            placeholder="https://.../video.m3u8"
+                            value={ep?.url || ''}
+                            onChange={(e) => {
+                              const nextEps = [...editingMovie.episodes];
+                              nextEps[epIdx] = { ...nextEps[epIdx], url: e.target.value };
+                              setEditingMovie({ 
+                                ...editingMovie, 
+                                episodes: nextEps,
+                                m3u8Url: nextEps[0]?.url || editingMovie.m3u8Url || '' 
+                              });
+                            }}
+                            className="w-full p-1.5 rounded bg-surface border border-glass-border text-neon-cyan text-xs font-mono"
+                          />
+                        </div>
 
-                      <div className="pt-4 flex-shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextEps = (editingMovie.episodes || []).filter((_, idx) => idx !== epIdx);
-                            setEditingMovie({ 
-                              ...editingMovie, 
-                              episodes: nextEps,
-                              m3u8Url: nextEps[0]?.url || ''
-                            });
-                          }}
-                          className="p-1.5 rounded bg-red-500/15 hover:bg-red-500/30 text-red-400 border border-red-500/30 text-xs transition-colors cursor-pointer"
-                          title="Xóa tập này"
-                        >
-                          🗑️
-                        </button>
+                        <div className="pt-4 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextEps = (editingMovie.episodes || []).filter((_, idx) => idx !== epIdx);
+                              setEditingMovie({ 
+                                ...editingMovie, 
+                                episodes: nextEps,
+                                m3u8Url: nextEps[0]?.url || ''
+                              });
+                            }}
+                            className="p-1.5 rounded bg-red-500/15 hover:bg-red-500/30 text-red-400 border border-red-500/30 text-xs transition-colors cursor-pointer"
+                            title="Xóa tập này"
+                          >
+                            🗑️
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                   {(!editingMovie.episodes || editingMovie.episodes.length === 0) && (
                     <p className="text-center text-xs text-gray-500 py-3">Chưa có tập phim nào. Nhấn "+ Thêm Tập Mới" để thêm tập.</p>
@@ -1058,6 +1119,61 @@ const MovieManagementPage = () => {
                     onChange={e => setEditingMovie({ ...editingMovie, country: e.target.value })}
                     className="w-full p-2.5 rounded-lg bg-surface border border-emerald-500/40 text-white font-semibold mt-1"
                   />
+                </div>
+              </div>
+
+              {/* Thông tin Tập hiện tại & Đạo diễn & Trạng thái */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-surface/90 border border-neon-cyan/20">
+                <div>
+                  <label className="text-gray-300 font-bold text-neon-cyan flex items-center gap-1.5">
+                    <span>📺</span>
+                    <span>Tập Hiện Tại / Thông Tin</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    placeholder="VD: Tập hoàn tất (11/11) hoặc Tập 12"
+                    value={editingMovie.episodeCurrent || editingMovie.episodesStatus || ''} 
+                    onChange={e => setEditingMovie({ 
+                      ...editingMovie, 
+                      episodeCurrent: e.target.value, 
+                      episodesStatus: e.target.value 
+                    })}
+                    className="w-full p-2.5 rounded-lg bg-surface border border-neon-cyan/40 text-neon-cyan font-bold mt-1 text-xs focus:outline-none focus:border-neon-cyan"
+                  />
+                  <span className="text-[10px] text-gray-400 mt-0.5 block">Hiển thị ở trang chi tiết và danh sách</span>
+                </div>
+
+                <div>
+                  <label className="text-gray-300 font-bold text-amber-400 flex items-center gap-1.5">
+                    <span>🎬</span>
+                    <span>Đạo Diễn</span>
+                  </label>
+                  <input 
+                    type="text" 
+                    placeholder="VD: Ryosuke Shibuya, Makoto Hoshino..."
+                    value={editingMovie.director || ''} 
+                    onChange={e => setEditingMovie({ ...editingMovie, director: e.target.value })}
+                    className="w-full p-2.5 rounded-lg bg-surface border border-amber-400/40 text-white font-semibold mt-1 text-xs focus:outline-none focus:border-amber-400"
+                  />
+                  <span className="text-[10px] text-gray-400 mt-0.5 block">Tên đạo diễn phim</span>
+                </div>
+
+                <div>
+                  <label className="text-gray-300 font-bold text-emerald-400 flex items-center gap-1.5">
+                    <span>📊</span>
+                    <span>Trạng Thái Phim</span>
+                  </label>
+                  <select 
+                    value={editingMovie.status || 'ongoing'} 
+                    onChange={e => setEditingMovie({ ...editingMovie, status: e.target.value })}
+                    className="w-full p-2.5 rounded-lg bg-surface border border-emerald-500/40 text-emerald-400 font-bold mt-1 text-xs focus:outline-none cursor-pointer"
+                  >
+                    <option value="ongoing">⏳ Đang chiếu (ongoing)</option>
+                    <option value="completed">✓ Hoàn tất (completed)</option>
+                    <option value="Active">⭐ Hoạt động (Active)</option>
+                    <option value="trailer">🎞️ Sắp chiếu (trailer)</option>
+                  </select>
+                  <span className="text-[10px] text-gray-400 mt-0.5 block">Trạng thái phát hành</span>
                 </div>
               </div>
 
@@ -1204,15 +1320,21 @@ const MovieManagementPage = () => {
                 <p><strong className="text-gray-400">IMDb:</strong> ★ {viewingMovie?.imdb || '8.0'}</p>
                 <p><strong className="text-gray-400">Năm:</strong> {viewingMovie?.year || '2024'}</p>
                 <p><strong className="text-gray-400">Chất lượng:</strong> {viewingMovie?.quality || '4K'}</p>
-                <p><strong className="text-gray-400">Số tập:</strong> {getEpisodeDisplay(viewingMovie?.episodes, viewingMovie?.episodesCount)}</p>
+                <p><strong className="text-gray-400">Trạng thái:</strong> <span className="font-semibold text-emerald-400">{viewingMovie?.status || 'Active'}</span></p>
+                <p><strong className="text-gray-400">Tập hiện tại:</strong> <span className="font-semibold text-neon-cyan">{viewingMovie?.episodeCurrent || viewingMovie?.episodesStatus || 'N/A'}</span> ({getEpisodeDisplay(viewingMovie?.episodes, viewingMovie?.episodesCount)})</p>
+                <p><strong className="text-gray-400">Đạo diễn:</strong> {viewingMovie?.director || 'Đang cập nhật'}</p>
+                <p><strong className="text-gray-400">Quốc gia:</strong> {viewingMovie?.country || 'Nhật Bản'}</p>
                 <div>
                   <strong className="text-gray-400 block mb-1">Thể loại đã chọn:</strong>
                   <div className="flex flex-wrap gap-1">
-                    {getGenresArray(viewingMovie).map((g, i) => (
-                      <span key={i} className="px-2 py-0.5 rounded bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/30 text-[10px] font-bold">
-                        {g}
-                      </span>
-                    ))}
+                    {getGenresArray(viewingMovie).map((g, i) => {
+                      const genreTagKey = `view-genre-${i}`;
+                      return (
+                        <span key={genreTagKey} className="px-2 py-0.5 rounded bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/30 text-[10px] font-bold">
+                          {g}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
                 <p className="text-neon-cyan truncate font-mono pt-1"><strong className="text-gray-400">M3U8:</strong> {viewingMovie?.m3u8Url || 'N/A'}</p>
@@ -1226,6 +1348,18 @@ const MovieManagementPage = () => {
           </div>
         </div>
       )}
+
+      {/* AUTO-SYNC MODAL WITH LIVE LOG */}
+      <AutoSyncModal
+        isOpen={isAutoSyncModalOpen}
+        onClose={() => {
+          setIsAutoSyncModalOpen(false);
+          fetchMoviesList();
+        }}
+        onFinished={() => {
+          fetchMoviesList();
+        }}
+      />
 
     </div>
   );

@@ -16,3 +16,5 @@ export const formatVietnameseSentenceCase = (text) => {
   if (!trimmed) return 'Phim chưa có tên';
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
 };
+
+export { generateSlug } from './slugUtils';
