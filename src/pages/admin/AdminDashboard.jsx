@@ -13,33 +13,16 @@ const AdminDashboard = () => {
   const navigate = useNavigate();
 
   // Real Statistics State (Nhiệm vụ 5)
-  const [stats, setStats] = useState({ total_movies: 0, today_views: 0 });
+  const [stats, setStats] = useState({ total_movies: null, today_views: null, firestore: 'Chưa có dữ liệu' });
   const [isLoadingStats, setIsLoadingStats] = useState(true);
 
   const loadRealStats = useCallback(async () => {
     setIsLoadingStats(true);
     try {
-      // 1. Lấy danh sách phim thực tế từ Firebase / Local Cache
-      const moviesList = await getMovies();
-      const currentMovieCount = Array.isArray(moviesList) ? moviesList.length : 0;
-
-      // 2. Gọi API Backend để lấy thống kê chuẩn xác (Tổng phim và Lượt xem hôm nay)
-      const data = await getAdminStats(currentMovieCount);
-      setStats({
-        total_movies: data.total_movies ?? currentMovieCount,
-        today_views: data.today_views ?? 0
-      });
-
-      // 3. Đồng bộ dữ liệu phim sang SQLite backend trong nền nếu có
-      if (Array.isArray(moviesList) && moviesList.length > 0) {
-        fetch('http://localhost:8000/api/movies/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ movies: moviesList })
-        }).catch(() => {});
-      }
+      const data = await getAdminStats();
+      setStats(data);
     } catch (err) {
-      console.error("Lỗi khi tải thống kê thực tế cho Admin Dashboard:", err);
+      setStats({ total_movies: null, today_views: null, firestore: 'Không khả dụng' });
     } finally {
       setIsLoadingStats(false);
     }
@@ -97,9 +80,8 @@ const AdminDashboard = () => {
       <TrollLogoutModal
         isOpen={isTrollModalOpen}
         onClose={() => setIsTrollModalOpen(false)}
-        onConfirmLogout={() => {
-          logout();
-          navigate('/login');
+        onConfirmLogout={async () => {
+          try { await logout(); navigate('/login'); } catch { /* Keep session visible until revocation succeeds. */ }
         }}
       />
 
@@ -130,7 +112,7 @@ const AdminDashboard = () => {
               {isLoadingStats ? (
                 <span className="text-gray-500 animate-pulse text-lg">Đang tải...</span>
               ) : (
-                stats.total_movies.toLocaleString()
+                (stats.total_movies?.toLocaleString() ?? 'Chưa có dữ liệu')
               )}
             </p>
             <Link to="/admin/movies" className="text-[11px] text-neon-red hover:underline block pt-1">Quản lý ngay →</Link>
@@ -139,8 +121,8 @@ const AdminDashboard = () => {
           {/* Ô 2: Luồng KKPhim Active */}
           <div className="p-5 glass-panel rounded-xl border-l-4 border-neon-cyan space-y-1">
             <p className="text-xs text-gray-400 font-semibold uppercase">Luồng KKPhim Active</p>
-            <p className="text-2xl font-black text-white">98.5%</p>
-            <span className="text-[11px] text-emerald-400 block pt-1">Hoạt động bình thường</span>
+            <p className="text-2xl font-black text-white">Chưa có dữ liệu</p>
+            <span className="text-[11px] text-emerald-400 block pt-1">Chưa đo chất lượng luồng</span>
           </div>
 
           {/* Ô 3: Lượt Xem Hôm Nay (Dữ liệu thật theo ngày hôm nay từ view_logs / logs) */}
@@ -150,7 +132,7 @@ const AdminDashboard = () => {
               {isLoadingStats ? (
                 <span className="text-gray-500 animate-pulse text-lg">Đang tải...</span>
               ) : (
-                stats.today_views.toLocaleString()
+                (stats.today_views?.toLocaleString() ?? 'Chưa có dữ liệu')
               )}
             </p>
             <span className="text-[11px] text-amber-400 block pt-1">Lượt xem thực tế hôm nay</span>
@@ -159,8 +141,8 @@ const AdminDashboard = () => {
           {/* Ô 4: Trạng Thái Firestore */}
           <div className="p-5 glass-panel rounded-xl border-l-4 border-emerald-500 space-y-1">
             <p className="text-xs text-gray-400 font-semibold uppercase">Trạng Thái Firestore</p>
-            <p className="text-2xl font-black text-emerald-400">Connected</p>
-            <span className="text-[11px] text-gray-400 block pt-1">Batch write sẵn sàng</span>
+            <p className="text-2xl font-black text-emerald-400">{stats.firestore === 'connected' ? 'Đã kết nối' : stats.firestore}</p>
+            <span className="text-[11px] text-gray-400 block pt-1">Theo lần tải dữ liệu gần nhất</span>
           </div>
         </div>
 

@@ -1,60 +1,50 @@
-version: '3.8'
-
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: webphim_clickhouse
-    restart: always
+    image: clickhouse/clickhouse-server:25.8.1.5101
+    restart: unless-stopped
     environment:
       CLICKHOUSE_DB: web_phim
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: default_password
-    ports:
-      - "8123:8123" # HTTP interface
-      - "9000:9000" # Native interface
+      CLICKHOUSE_USER: webphim
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in local environment}
+    expose:
+      - "8123"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-    #deploy:
-    #  resources:
-    #    limits:
-    #      memory: 1.5G
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     healthcheck:
-      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8123/ping" ]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
       interval: 10s
-      timeout: 10s
+      timeout: 5s
       retries: 15
       start_period: 60s
 
   fastapi-backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: webphim_fastapi
-    restart: always
+    build: ./backend
+    restart: unless-stopped
     environment:
+      SQLITE_PATH: /data/interactions.db
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      SESSION_SECONDS: ${SESSION_SECONDS:-28800}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:?Set FIREBASE_PROJECT_ID}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase.json
+      CLICKHOUSE_ENABLED: "true"
       CLICKHOUSE_HOST: clickhouse
-      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DB: web_phim
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: default_password
-      BATCH_SIZE: 50
-      FLUSH_INTERVAL_SECONDS: 5
-      GEMINI_API_KEY: AQ.Ab8RN6L74oCD-TqJGjwvs4677JijqhZKN7Ex4M-MKdI2KIGK8A
-
+      CLICKHOUSE_USER: webphim
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
-      - ./backend:/app
-
+      - ./backend:/data
+      - ${GOOGLE_APPLICATION_CREDENTIALS:?Set absolute credentials path}:/run/secrets/firebase.json:ro
     depends_on:
       clickhouse:
         condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 500M
 
 volumes:
   clickhouse_data:
-    driver: local

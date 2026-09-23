@@ -74,7 +74,7 @@ export function recordWatchHistory(username, movie, episode = '1', currentTime =
 
   // Find existing record for this user and movie
   const existingIndex = historyList.findIndex(
-    item => item.username === username && String(item.movieId) === movieIdStr
+    item => item.username === username && String(item.movieId) === movieIdStr && String(item.episode) === String(episode)
   );
 
   const existing = existingIndex >= 0 ? historyList[existingIndex] : null;
@@ -90,19 +90,19 @@ export function recordWatchHistory(username, movie, episode = '1', currentTime =
   const progressText = finalCurrentTime > 0 ? formatDurationToMinutesSeconds(finalCurrentTime) : '0 giây';
 
   const historyEntry = {
-    id: `${username}_${movieIdStr}`,
+    id: username + '_' + movieIdStr + '_' + episode,
     username: username,
     movieId: movieIdStr,
     title: movie.title || 'Phim mới',
     originalTitle: movie.originalTitle || '',
     poster: movie.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600',
     banner: movie.banner || movie.poster || '',
-    imdb: movie.imdb || '8.0',
-    year: movie.year || '2024',
+    imdb: movie.imdb || '',
+    year: movie.year || '',
     quality: movie.quality || '4K UltraHD',
     ageRating: movie.ageRating || 'T16',
     season: movie.season || 'Phần 1',
-    episodesStatus: movie.episodesStatus || 'Tập hoàn tất',
+    episodesStatus: movie.episodesStatus || '',
     genres: Array.isArray(movie.genres) ? movie.genres : (movie.genres ? [movie.genres] : ['Phim bộ']),
     episode: String(episode),
     currentTime: Math.floor(finalCurrentTime),
@@ -129,7 +129,7 @@ export function updateWatchPlaybackPosition(username, movieId, episode, currentT
   const historyList = getAllHistoryFromStorage();
   const movieIdStr = String(movieId);
   const existingIndex = historyList.findIndex(
-    item => item.username === username && String(item.movieId) === movieIdStr
+    item => item.username === username && String(item.movieId) === movieIdStr && String(item.episode) === String(episode)
   );
 
   if (existingIndex >= 0) {
@@ -148,11 +148,11 @@ export function updateWatchPlaybackPosition(username, movieId, episode, currentT
 /**
  * Get history record for a specific user, movie and episode
  */
-export function getMovieHistory(username, movieId) {
+export function getMovieHistory(username, movieId, episode = null) {
   if (!username || !movieId) return null;
   const historyList = getAllHistoryFromStorage();
   return historyList.find(
-    item => item.username === username && String(item.movieId) === String(movieId)
+    item => item.username === username && String(item.movieId) === String(movieId) && (episode === null || String(item.episode) === String(episode))
   ) || null;
 }
 
@@ -166,7 +166,8 @@ export function getUserWatchHistory(username) {
   const historyList = getAllHistoryFromStorage();
   return historyList
     .filter(item => item.username === username)
-    .sort((a, b) => (b.watchedAt || 0) - (a.watchedAt || 0));
+    .sort((a, b) => (b.watchedAt || 0) - (a.watchedAt || 0))
+    .filter((item, index, all) => all.findIndex(other => other.movieId === item.movieId) === index);
 }
 
 /**

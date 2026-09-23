@@ -379,7 +379,7 @@ const Navbar = () => {
                       </span>
                     </button>
                     <p className="text-[11px] text-red-400 italic text-center font-medium leading-tight px-1">
-                      "Kho tàng kiến thức, cùng nững tài liệu học tập đắt giá!Còn chần chừ gì nữa mà không vào ngay:)"
+                      &quot;Kho tàng kiến thức, cùng nững tài liệu học tập đắt giá!Còn chần chừ gì nữa mà không vào ngay:)&quot;
                     </p>
                   </div>
                 </div>
@@ -394,9 +394,8 @@ const Navbar = () => {
       <TrollLogoutModal
         isOpen={isTrollModalOpen}
         onClose={() => setIsTrollModalOpen(false)}
-        onConfirmLogout={() => {
-          logout();
-          navigate('/login');
+        onConfirmLogout={async () => {
+          try { await logout(); navigate('/login'); } catch { /* Keep session visible until revocation succeeds. */ }
         }}
       />
 

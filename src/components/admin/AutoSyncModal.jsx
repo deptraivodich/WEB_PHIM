@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getMovies } from '../../services/movieService';
-import { isEligibleForAutoUpdate, runAutoUpdateBatch } from '../../services/autoCrawlService';
+import { isEligibleForAutoUpdate, runAutoUpdate, getAutoUpdateState, configureAutoUpdate, stopAutoUpdate } from '../../services/autoCrawlService';
 
-const STORAGE_INTERVAL_KEY = '210loliphim_auto_sync_interval';
-const STORAGE_LAST_TIME_KEY = '210loliphim_last_auto_sync_time';
+
+
 
 export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
   // Stats
@@ -19,14 +19,26 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
   const [statusText, setStatusText] = useState('Sẵn sàng đồng bộ');
 
   // Interval Setting
-  const [intervalSetting, setIntervalSetting] = useState(() => {
-    return localStorage.getItem(STORAGE_INTERVAL_KEY) || '0';
-  });
-
-  // Last Updated Time
-  const [lastUpdatedTime, setLastUpdatedTime] = useState(() => {
-    return localStorage.getItem(STORAGE_LAST_TIME_KEY) || '';
-  });
+  const [intervalSetting, setIntervalSetting] = useState('0');
+  const [lastUpdatedTime, setLastUpdatedTime] = useState('');
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const state = await getAutoUpdateState();
+        if (!active) return;
+        setIntervalSetting(String(state.interval_seconds * 1000));
+        setIsRunning(state.status === 'running');
+        if (state.last_finished) setLastUpdatedTime(new Date(state.last_finished * 1000).toLocaleString('vi-VN'));
+        if (state.error) setStatusText(state.error);
+        else setStatusText(state.status === 'running' ? 'Máy chủ đang cập nhật...' : 'Trạng thái máy chủ: ' + state.status);
+      } catch { if (active) setStatusText('Không đọc được trạng thái máy chủ'); }
+    };
+    refresh();
+    const timer = setInterval(refresh, 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, [isOpen]);
 
   // Logs List
   const [logs, setLogs] = useState([]);
@@ -84,10 +96,12 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
   }, [isOpen]);
 
   // Handle interval setting change
-  const handleIntervalChange = (val) => {
-    setIntervalSetting(val);
-    localStorage.setItem(STORAGE_INTERVAL_KEY, val);
-    appendLog('info', `Đã đổi cấu hình quét ngầm định kỳ: ${val === '0' ? 'Tắt' : `${parseInt(val, 10) / 60000} phút`}.`);
+  const handleIntervalChange = async val => {
+    try {
+      const state = await configureAutoUpdate(val);
+      setIntervalSetting(String(state.interval_seconds * 1000));
+      appendLog('info', 'Đã lưu lịch cập nhật trên máy chủ.');
+    } catch (error) { appendLog('error', error.message); }
   };
 
   // Clear Logs
@@ -96,112 +110,36 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
   };
 
   // Stop Syncing
-  const handleStopSync = () => {
-    if (isRunningRef.current) {
+  const handleStopSync = async () => {
+    try {
+      await stopAutoUpdate();
+      setStatusText('Đã yêu cầu dừng tác vụ trên máy chủ.');
       isRunningRef.current = false;
-      setIsRunning(false);
-      setStatusText('Đã dừng đồng bộ');
-      appendLog('info', 'Quá trình đồng bộ đã được tạm dừng bởi người dùng.');
-    }
+    } catch (error) { appendLog('error', error.message); }
   };
 
-  // Start Sync Loop
   const handleStartSync = async () => {
-    if (isRunningRef.current) return;
-
+    if (isRunningRef.current || isRunning) return;
+    isRunningRef.current = true;
+    setIsRunning(true);
+    setProgressPercent(0);
+    setStatusText('Máy chủ đang kiểm tra tối đa 20 phim...');
     try {
-      const all = await getMovies();
-      const eligible = (Array.isArray(all) ? all : []).filter(isEligibleForAutoUpdate);
-
-      if (eligible.length === 0) {
-        appendLog('info', 'Tất cả các phim trong cơ sở dữ liệu đều đã Hoàn Tất hoặc là phim lẻ chiếu rạp.');
-        return;
-      }
-
-      // Sort by oldest updated time first (round-robin)
-      eligible.sort((a, b) => {
-        const timeA = new Date(a.lastAutoCrawledAt || a.updatedAt || a.updated_at || 0).getTime();
-        const timeB = new Date(b.lastAutoCrawledAt || b.updatedAt || b.updated_at || 0).getTime();
-        return timeA - timeB;
-      });
-
-      setTotalEligible(eligible.length);
-      setScannedCount(0);
-      setUpdatedCount(0);
-      setAddedEpisodesCount(0);
-      setErrorCount(0);
-      setProgressPercent(0);
-
-      isRunningRef.current = true;
-      setIsRunning(true);
-      setStatusText('Đang đồng bộ tập mới...');
-      appendLog('info', `Bắt đầu tiến trình đồng bộ ${eligible.length} phim từ PhimAPI...`);
-
-      // Process in batches of 5 movies for snappy live updates
-      const BATCH_SIZE = 5;
-      let currentScanned = 0;
-      let currentUpdated = 0;
-      let currentAddedEps = 0;
-      let currentErrors = 0;
-
-      for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
-        if (!isRunningRef.current) {
-          break;
-        }
-
-        const batch = eligible.slice(i, i + BATCH_SIZE);
-        const res = await runAutoUpdateBatch(batch);
-
-        if (!isRunningRef.current) {
-          break;
-        }
-
-        if (res.status === 'success') {
-          const details = res.checkedDetails || [];
-          for (const d of details) {
-            currentScanned += 1;
-            if (d.status === 'updated') {
-              currentUpdated += 1;
-              currentAddedEps += d.added_episodes_count || 0;
-              appendLog('updated', d.message || `Cập nhật "${d.title}" thành công.`);
-            } else if (d.status === 'error') {
-              currentErrors += 1;
-              appendLog('error', d.message || `Lỗi khi kiểm tra "${d.title}".`);
-            } else {
-              appendLog('unchanged', d.message || `"${d.title}" đã chuẩn xác đủ ${d.episodes_count || 0} tập, không cần sửa.`);
-            }
-          }
-        } else {
-          currentErrors += batch.length;
-          currentScanned += batch.length;
-          appendLog('error', `Lỗi kết nối khi cào lô phim: ${res.error || 'API không phản hồi'}`);
-        }
-
-        // Update stats
-        setScannedCount(currentScanned);
-        setUpdatedCount(currentUpdated);
-        setAddedEpisodesCount(currentAddedEps);
-        setErrorCount(currentErrors);
-
-        const pct = Math.min(100, Math.round((currentScanned / eligible.length) * 100));
-        setProgressPercent(pct);
-      }
-
-      if (isRunningRef.current) {
-        const finishedDateTime = getFormattedDateTime();
-        setLastUpdatedTime(finishedDateTime);
-        localStorage.setItem(STORAGE_LAST_TIME_KEY, finishedDateTime);
-        setStatusText('Đã hoàn thành đồng bộ');
-        setProgressPercent(100);
-        appendLog('info', `🎉 Hoàn tất chu kỳ quét! Đã kiểm tra ${currentScanned} phim, phát hiện ${currentUpdated} phim có tập mới (+${currentAddedEps} tập).`);
-        if (typeof onFinished === 'function') {
-          onFinished();
-        }
-      }
-    } catch (err) {
-      console.error('Lỗi quy trình Auto-Sync:', err);
-      appendLog('error', `Lỗi ngoại lệ: ${err.message}`);
-      setStatusText('Gặp sự cố khi đồng bộ');
+      const result = await runAutoUpdate();
+      const details = result.checkedDetails || [];
+      setScannedCount(result.checkedCount);
+      setUpdatedCount(result.updatedCount);
+      setAddedEpisodesCount(details.reduce((sum, item) => sum + (item.added_episodes_count || 0), 0));
+      setErrorCount(details.filter(item => item.status === 'error').length);
+      for (const item of details) appendLog(item.status, item.message || (item.title + ': ' + item.status));
+      setStatusText(result.status === 'success' ? 'Đã hoàn thành lô cập nhật.' : 'Một phần cập nhật thất bại. Xem nhật ký.');
+      setProgressPercent(100);
+      const state = await getAutoUpdateState();
+      if (state.last_finished) setLastUpdatedTime(new Date(state.last_finished * 1000).toLocaleString('vi-VN'));
+      onFinished?.();
+    } catch (error) {
+      setStatusText('Cập nhật thất bại.');
+      appendLog('error', error.message);
     } finally {
       isRunningRef.current = false;
       setIsRunning(false);

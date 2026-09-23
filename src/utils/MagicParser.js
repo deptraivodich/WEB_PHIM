@@ -1,3 +1,5 @@
+import TSV_HEADERS from '../../backend/tsv_schema.json' with { type: 'json' };
+export { TSV_HEADERS };
 /**
  * Phase 4 & Upgrade: MagicParser Utility
  * Implements 'The Carry-over Algorithm' to parse raw TSV text copied from Excel/Google Sheets
@@ -5,7 +7,7 @@
  * Fully supports 'Ảnh bìa' (Poster / Banner) column mapping in any column order.
  */
 
-import { formatVietnameseSentenceCase } from './textUtils';
+import { formatVietnameseSentenceCase } from './textUtils.js';
 export { formatVietnameseSentenceCase };
 
 // Flexible Column Alias Mapping Dictionary
@@ -56,17 +58,17 @@ const getMappedStandardKey = (rawHeader) => {
  * Cleans IMDb rating strings e.g. "8.2 /10" or "8.2/10" -> "8.2"
  */
 export const cleanImdbScore = (rawImdb) => {
-  if (!rawImdb) return '8.0';
+  if (!rawImdb) return '';
   const str = String(rawImdb).trim();
   const match = str.match(/(\d+(\.\d+)?)/);
-  return match ? match[1] : '8.0';
+  return match ? match[1] : '';
 };
 
 /**
  * Splits comma/slash separated genres into a clean array
  */
 export const parseGenresArray = (rawGenres) => {
-  if (!rawGenres) return ['Action', 'Fantasy'];
+  if (!rawGenres) return [];
   if (Array.isArray(rawGenres)) return rawGenres.filter(Boolean);
   
   return String(rawGenres)
@@ -89,25 +91,29 @@ export const parseTSV = (rawText) => {
   }
 
   // Split lines and trim whitespace, preserving tab structure
-  const rawLines = rawText.split(/\r?\n/).filter(line => line.trim().length > 0);
+  const rawLines = parseTSVRows(rawText);
 
   if (rawLines.length < 2) {
     throw new Error('Dữ liệu TSV cần tối thiểu 1 dòng Tiêu đề (Header) và 1 dòng Dữ liệu.');
   }
 
   // Parse Header row (Row 1)
-  const rawHeaders = rawLines[0].split('\t').map(h => h.trim());
+  const rawHeaders = rawLines[0].map(h => h.trim());
   const headerMap = rawHeaders.map(rh => ({
     raw: rh,
     key: getMappedStandardKey(rh)
   }));
 
+  const keys = headerMap.map(col => col.key);
+  if (keys.some(key => !key) || new Set(keys).size !== keys.length) throw new Error('Header chứa cột không hỗ trợ hoặc trùng tên.');
+  if (['title', 'episode', 'videoUrl'].some(key => !keys.includes(key))) throw new Error('Thiếu cột Tên Phim, Tập hoặc Link Video.');
   const parsedMovies = [];
   let currentMovie = null;
 
   // Process data rows from Row 2 onwards
   for (let i = 1; i < rawLines.length; i++) {
-    const rowValues = rawLines[i].split('\t').map(val => val.trim());
+    if (rawLines[i].length !== rawHeaders.length) throw new Error('Dòng dữ liệu ' + (i + 1) + ': cần ' + rawHeaders.length + ' cột, nhận ' + rawLines[i].length + '.');
+    const rowValues = rawLines[i].map(val => val.trim());
     const rawObject = {};
     
     // Map each cell value to standard key or keep raw header key
@@ -124,6 +130,10 @@ export const parseTSV = (rawText) => {
     const episodeValue = (rawObject.episode || '').trim();
     const videoUrlValue = (rawObject.videoUrl || rawObject.m3u8Url || '').trim();
 
+    if (!videoUrlValue || !/^https?:\/\//i.test(videoUrlValue)) throw new Error('Dòng dữ liệu ' + (i + 1) + ': Link Video không hợp lệ.');
+    if (!titleValue && !currentMovie) throw new Error('Dòng dữ liệu ' + (i + 1) + ': tập phim chưa có tên phim để kế thừa.');
+    if (!titleValue && currentMovie?.episodes.some(ep => String(ep.name) === episodeValue)) throw new Error('Dòng dữ liệu ' + (i + 1) + ': trùng tập phim.');
+    if (titleValue && parsedMovies.some(m => m.title.toLowerCase() === formatVietnameseSentenceCase(titleValue).toLowerCase())) throw new Error('Dòng dữ liệu ' + (i + 1) + ': tên phim lặp lại; để trống tên ở các tập tiếp theo.');
     // TRƯỜNG HỢP 1: Có Tên Phim -> Khởi tạo một Movie mới
     if (titleValue) {
       const genresArray = parseGenresArray(rawObject.genres || rawObject.category);
@@ -142,8 +152,8 @@ export const parseTSV = (rawText) => {
         year: (rawObject.year || new Date().getFullYear().toString()).trim(),
         country: (rawObject.country || '').trim(),
         director: (rawObject.director || 'Đang cập nhật').trim(),
-        genres: genresArray.length > 0 ? genresArray : ['Action', 'Fantasy'],
-        category: genresArray.length > 0 ? genresArray.join(', ') : 'Action, Fantasy',
+        genres: genresArray,
+        category: genresArray.join(', '),
         quality: (rawObject.quality || '4K UltraHD').trim(),
         ageRating: (rawObject.ageRating || '16+').trim(),
         poster: posterUrl,
@@ -213,3 +223,35 @@ Thất Nghiệp Chuyển Sinh (Phần 3)\tMushoku Tensei: Jobless Reincarnation 
 \t\t5\thttps://v7.kkphimplayer7.com/20260726/lhxZcA50/index.m3u8\t\t\t\t\t\t\t\t
 Dune: Hành Tinh Cát 2\tDune: Part Two\t1\thttps://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8\thttps://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1200&auto=format&fit=crop&q=80\t8.6\t2024\tMỹ\tDenis Villeneuve\tcompleted\tHoàn Tất (1/1)\tAction, Sci-Fi, Adventure`;
 };
+
+export function parseTSVRows(text) {
+  if (text.length > 2 * 1024 * 1024) throw new Error('TSV vượt quá 2 MB.');
+  const rows = [];
+  let row = [], cell = '', quoted = false, closed = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++; }
+        else { quoted = false; closed = true; }
+      } else cell += ch;
+      continue;
+    }
+    if (ch === '"' && !cell && !closed) { quoted = true; continue; }
+    if (ch === '\t' || ch === '\n' || ch === '\r') {
+      row.push(cell); cell = ''; closed = false;
+      if (ch !== '\t') {
+        if (ch === '\r' && text[i + 1] === '\n') i++;
+        if (row.some(value => value.trim())) rows.push(row);
+        row = [];
+      }
+    } else {
+      if (closed) throw new Error('Ký tự không hợp lệ sau ô TSV có dấu ngoặc kép.');
+      cell += ch;
+    }
+  }
+  if (quoted) throw new Error('Ô TSV chưa đóng dấu ngoặc kép.');
+  row.push(cell);
+  if (row.some(value => value.trim())) rows.push(row);
+  return rows;
+}

@@ -11,6 +11,7 @@ import {
 } from '../../services/interactionService';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
 import { generateSlug } from '../../utils/slugUtils';
+import { resolveMovie } from '../../utils/playback';
 
 const formatTimeAgo = (dateStr) => {
   if (!dateStr) return 'Vừa xong';
@@ -25,33 +26,10 @@ const formatTimeAgo = (dateStr) => {
   }
 };
 
-// Fallback template when fetching detail
-const DEFAULT_FALLBACK_MOVIE = {
-  id: '1',
-  title: 'Phim Đang Tải...',
-  originalTitle: 'Loading...',
-  banner: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
-  poster: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600&auto=format&fit=crop&q=80',
-  imdb: '8.0',
-  year: '2024',
-  ageRating: '16+',
-  quality: '4K UltraHD',
-  duration: '120 phút',
-  episodesCount: 'Full Tập',
-  audio: 'Vietsub + Thuyết Minh',
-  director: 'Đang cập nhật',
-  genres: ['Hành động', 'Viễn tưởng'],
-  description: 'Mô tả chi tiết nội dung phim đang được cập nhật từ hệ thống.',
-  episodes: Array.from({ length: 12 }, (_, i) => ({
-    number: i + 1,
-    title: `Tập ${i + 1}`,
-    m3u8Url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'
-  }))
-};
-
 const DetailFilm = () => {
   const { slug, id } = useParams(); // SEO Slug or ID param
   const targetSlug = slug || id;
+  const [loadError, setLoadError] = useState('');
   const [movieDetail, setMovieDetail] = useState(null);
   const [allMovies, setAllMovies] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -64,20 +42,19 @@ const DetailFilm = () => {
 
   // Fetch & re-bind movie data whenever slug/id in URL changes
   useEffect(() => {
+    let cancelled = false;
     const fetchMovieData = async () => {
       setIsLoading(true);
+      setLoadError('');
       setMovieDetail(null); // Clear previous state immediately!
 
       try {
         const moviesList = await getMovies();
+        if (cancelled) return;
         setAllMovies(moviesList || []);
 
         // Đối chiếu slug trên URL với generateSlug(movie.title) hoặc id
-        const found = (moviesList || []).find(m => 
-          generateSlug(m.title) === targetSlug || 
-          String(m.id) === String(targetSlug) ||
-          generateSlug(m.originalTitle) === targetSlug
-        );
+        const found = resolveMovie(moviesList || [], targetSlug);
 
         const formatEpisodes = (rawEps, defaultM3u8) => {
           if (Array.isArray(rawEps) && rawEps.length > 0) {
@@ -94,7 +71,7 @@ const DetailFilm = () => {
             {
               number: 1,
               title: 'Tập 1',
-              m3u8Url: defaultM3u8 || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'
+              m3u8Url: defaultM3u8 || ''
             }
           ];
         };
@@ -115,43 +92,22 @@ const DetailFilm = () => {
               setViewsCount(stats.views || 0);
               setIsFavorite(stats.is_liked || false);
             }
-          });
+          }).catch(() => {});
           getMovieComments(found.id).then(cmts => {
-            setComments(cmts || []);
-          });
-        } else if (moviesList && moviesList.length > 0) {
-          const fallback = moviesList[0];
-          const parsedEps = formatEpisodes(fallback.episodes, fallback.m3u8Url);
-          setMovieDetail({
-            ...fallback,
-            episodes: parsedEps,
-            episodesCount: `${parsedEps.length} Tập`
-          });
-
-          const session = getCurrentSession();
-          const username = session?.username || 'anonymous';
-          getMovieStats(fallback.id, username).then(stats => {
-            if (stats) {
-              setViewsCount(stats.views || 0);
-              setIsFavorite(stats.is_liked || false);
-            }
-          });
-          getMovieComments(fallback.id).then(cmts => {
-            setComments(cmts || []);
-          });
-        } else {
-          setMovieDetail(DEFAULT_FALLBACK_MOVIE);
+            if (!cancelled) setComments(cmts || []);
+          }).catch(() => {});
         }
       } catch (err) {
         console.error("Error fetching detail for slug/id:", targetSlug, err);
-        setMovieDetail(DEFAULT_FALLBACK_MOVIE);
+        if (!cancelled) setLoadError('Không tải được dữ liệu phim.');
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
     fetchMovieData();
-    window.scrollTo(0, 0); // Scroll to top when changing movie
+    window.scrollTo(0, 0);
+    return () => { cancelled = true; };
   }, [targetSlug]);
 
   // Thuật toán 'Phim Liên Quan' (Tối đa 10 phim)
@@ -253,8 +209,10 @@ const DetailFilm = () => {
     if (!movieDetail?.id) return;
     const session = getCurrentSession();
     const username = session?.username || 'anonymous';
-    const res = await toggleMovieLike(movieDetail.id, username);
-    setIsFavorite(res.is_liked);
+    try {
+      const res = await toggleMovieLike(movieDetail.id, username);
+      setIsFavorite(res.is_liked);
+    } catch { /* API status reports failure. */ }
   };
 
   const handleAddComment = async (e) => {
@@ -262,6 +220,7 @@ const DetailFilm = () => {
     if (!newComment.trim() || !movieDetail?.id) return;
     const session = getCurrentSession();
     const username = session?.displayName || session?.username || 'Khách';
+    try {
     const created = await addMovieComment(movieDetail.id, {
       userId: session?.username || 'anonymous',
       username: username,
@@ -272,9 +231,11 @@ const DetailFilm = () => {
       setComments(prev => [created, ...prev]);
       setNewComment('');
     }
+    } catch { /* Keep the draft and report the API error. */ }
   };
 
-  if (isLoading || !movieDetail) {
+  if (!isLoading && !movieDetail) return <div role="status" className="min-h-screen pt-32 text-center text-white">{loadError || 'Không tìm thấy phim.'}</div>;
+  if (isLoading) {
     return (
       <div className="min-h-screen bg-background text-white flex flex-col justify-center items-center space-y-4">
         <div className="w-12 h-12 rounded-full border-4 border-neon-red border-t-transparent animate-spin"></div>
@@ -524,7 +485,8 @@ const DetailFilm = () => {
                 <input 
                   type="text" 
                   placeholder="Viết nhận xét của bạn về phim..."
-                  value={newComment}
+                  maxLength={2000}
+                    value={newComment}
                   onChange={(e) => setNewComment(e.target.value)}
                   className="flex-1 py-3 px-4 rounded-xl bg-background/80 border border-glass-border text-xs text-gray-200 focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan transition-all"
                 />

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { getStoredMovies } from '../../services/movieService';
+import { api } from '../../services/api';
 
 
 /**
@@ -43,7 +43,9 @@ const CineSmartAIBot = () => {
   }, [messages, isOpen, isTyping]);
 
   // Reset đoạn chat (+ Chat mới)
-  const handleResetChat = () => {
+  const handleResetChat = async () => {
+    try { await api('/api/chat/history', { method: 'DELETE' }); }
+    catch { return; }
     setMessages([{
       id: `msg_reset_${Date.now()}`,
       sender: 'ai',
@@ -55,7 +57,7 @@ const CineSmartAIBot = () => {
   // Xử lý gửi tin nhắn - Gọi API Backend FastAPI (Gemini 1.5 Flash + ClickHouse Telemetry)
   const handleSendMessage = async (textToSend) => {
     const text = textToSend || inputText;
-    if (!text.trim()) return;
+    if (!text.trim() || isTyping || text.length > 2000) return;
 
     const userMsg = {
       id: `user_${Date.now()}_${Math.random()}`,
@@ -69,33 +71,7 @@ const CineSmartAIBot = () => {
     setIsTyping(true);
 
     try {
-      // Lấy danh sách tên tất cả phim thực tế đang có trong kho dữ liệu Web
-      let availableMovies = [];
-      try {
-        const stored = getStoredMovies();
-        if (Array.isArray(stored) && stored.length > 0) {
-          availableMovies = stored.map(m => m.title).filter(Boolean);
-        }
-      } catch (e) {
-        console.warn("Could not read stored movies for AI context:", e);
-      }
-
-      const backendApiUrl = import.meta.env.VITE_CHAT_API_URL || 'http://localhost:8000/api/chat';
-      const response = await fetch(backendApiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text.trim(),
-          user_id: 'anonymous',
-          available_movies: availableMovies
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await api('/api/chat', { method: 'POST', body: { message: text.trim() } });
       const aiReplyText = data.reply || 'Xin lỗi, tôi chưa thể trả lời tin nhắn của bạn lúc này.';
 
       const aiMsg = {
@@ -104,16 +80,16 @@ const CineSmartAIBot = () => {
         text: aiReplyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-      setMessages((prev) => [...prev, aiMsg]);
+      setMessages((prev) => [...prev.slice(-19), aiMsg]);
     } catch (err) {
       console.warn("Không thể kết nối Backend Chat AI API, thực hiện phản hồi dự phòng:", err);
       const aiMsg = {
         id: `ai_${Date.now()}_${Math.random()}`,
         sender: 'ai',
-        text: `🤖 **Trợ lý CineSmart AI**: Rất tiếc không thể kết nối tới máy chủ AI (http://localhost:8000/api/chat). Bạn hãy chắc chắn dịch vụ FastAPI backend đang chạy nhé!`,
+        text: err.message || 'Không thể kết nối dịch vụ AI lúc này.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-      setMessages((prev) => [...prev, aiMsg]);
+      setMessages((prev) => [...prev.slice(-19), aiMsg]);
     } finally {
       setIsTyping(false);
     }
@@ -364,7 +340,8 @@ const CineSmartAIBot = () => {
               {/* Ô Input Text */}
               <input
                 type="text"
-                value={inputText}
+                maxLength={2000}
+                  value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 placeholder={isListening ? 'Đang nghe giọng nói của bạn...' : 'Nhập tin nhắn hoặc dùng mic...'}
                 className="flex-1 bg-gray-800 text-white text-xs px-3.5 py-2.5 rounded-xl border border-gray-700 focus:outline-none focus:border-amber-500 placeholder-gray-500 font-sans transition-all"

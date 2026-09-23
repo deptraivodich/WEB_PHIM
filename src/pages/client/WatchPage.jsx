@@ -12,6 +12,7 @@ import {
 } from '../../services/historyService';
 import { formatVietnameseSentenceCase } from '../../utils/textUtils';
 import { generateSlug } from '../../utils/slugUtils';
+import { resolveMovie, resolveEpisode } from '../../utils/playback';
 import { trackEvent } from '../../services/telemetryService';
 import { recordMovieView, getMovieStats, toggleMovieLike } from '../../services/interactionService';
 
@@ -26,7 +27,9 @@ const WatchPage = () => {
   
   const playerRef = useRef(null);
   const lastSavedTimeRef = useRef(0);
+  const playedKeyRef = useRef(null);
   const viewedMovieIdRef = useRef(null); // Ref track phim đã tăng view chưa trong phiên
+  const [loadError, setLoadError] = useState('');
   const [currentMovie, setCurrentMovie] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeEpisodeState, setActiveEpisodeState] = useState(episodeParam);
@@ -40,19 +43,17 @@ const WatchPage = () => {
   }, [episodeParam]);
 
   useEffect(() => {
+    let cancelled = false;
     const fetchWatchMovie = async () => {
       setIsLoading(true);
       setCurrentMovie(null);
+      setLoadError('');
+      setResumePrompt(null);
 
       try {
         const moviesList = await getMovies();
-        const found = (moviesList || []).find(m => 
-          generateSlug(m.title) === targetSlug || 
-          String(m.id) === String(targetSlug) ||
-          generateSlug(m.originalTitle) === targetSlug
-        );
-
-        const activeMovie = found || (moviesList && moviesList.length > 0 ? moviesList[0] : null);
+        if (cancelled) return;
+        const activeMovie = resolveMovie(moviesList || [], targetSlug);
         if (activeMovie) {
           setCurrentMovie(activeMovie);
           const movieId = String(activeMovie.id);
@@ -60,11 +61,11 @@ const WatchPage = () => {
 
           // Đồng bộ thống kê tương tác (Views, Likes)
           getMovieStats(movieId, username).then(stats => {
-            if (stats) {
+            if (stats && !cancelled) {
               setViewsCount(stats.views || 0);
               setIsFavorite(stats.is_liked || false);
             }
-          });
+          }).catch(() => {});
 
           // LOGIC TĂNG LƯỢT XEM (NHIỆM VỤ 2):
           // Lượt xem chỉ tăng thêm +1 khi user vừa truy cập vào giao diện Xem Phim từ trang khác.
@@ -72,36 +73,35 @@ const WatchPage = () => {
           if (viewedMovieIdRef.current !== movieId) {
             viewedMovieIdRef.current = movieId;
             recordMovieView(movieId).then(res => {
-              if (res && typeof res.views === 'number') {
+              if (!cancelled && res && typeof res.views === 'number') {
                 setViewsCount(res.views);
               }
-            });
+            }).catch(() => {});
           }
         }
       } catch (err) {
-        console.error("Error loading watch movie for targetSlug:", targetSlug, err);
+        if (!cancelled) setLoadError('Không tải được dữ liệu phim. Vui lòng thử lại.');
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
     fetchWatchMovie();
     window.scrollTo(0, 0);
+    return () => { cancelled = true; };
   }, [targetSlug, currentUser?.username]);
 
   // Resolve episodes list safely
   const movieEpisodesList = currentMovie?.episodes || [];
   const episodes = Array.isArray(movieEpisodesList) && movieEpisodesList.length > 0
     ? movieEpisodesList
-    : [{ name: '1', url: currentMovie?.m3u8Url || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8' }];
+    : (currentMovie?.m3u8Url ? [{ name: '1', url: currentMovie.m3u8Url }] : []);
 
   const cleanEpState = String(activeEpisodeState).replace(/^tap-?/i, '');
-  const activeEpisodeObj = episodes.find(ep => {
-    const epNameStr = String(ep.name || ep.number || '');
-    const cleanEpName = epNameStr.replace(/^tap-?/i, '');
-    return epNameStr === String(activeEpisodeState) || cleanEpName === cleanEpState;
-  }) || episodes[0];
-  const activeStreamUrl = activeEpisodeObj?.url || activeEpisodeObj?.m3u8Url || currentMovie?.m3u8Url || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
+  const activeEpisodeObj = resolveEpisode(episodes, activeEpisodeState, Boolean(episode || searchParams.get('ep')));
+  const activeStreamUrl = activeEpisodeObj?.url || activeEpisodeObj?.m3u8Url || '';
+  const canonicalId = currentMovie?.id;
+  const movieReady = Boolean(currentMovie && resolveMovie([currentMovie], targetSlug));
   const currentEpName = activeEpisodeObj?.name || activeEpisodeObj?.number || cleanEpState;
   const formattedTitle = formatVietnameseSentenceCase(currentMovie?.title || 'Phim mới');
 
@@ -124,10 +124,12 @@ const WatchPage = () => {
     }
   }, [activeEpIndex, currentMovie?.id]);
 
+  useEffect(() => { lastSavedTimeRef.current = 0; playedKeyRef.current = null; }, [canonicalId, currentEpName]);
+
   // Check saved progress and show resume dialog if user previously stopped mid-video
   useEffect(() => {
-    if (currentUser?.username && id) {
-      const historyItem = getMovieHistory(currentUser.username, id);
+    if (movieReady && activeEpisodeObj && currentUser?.username && canonicalId) {
+      const historyItem = getMovieHistory(currentUser.username, canonicalId, currentEpName);
       if (
         historyItem && 
         historyItem.currentTime && 
@@ -142,28 +144,30 @@ const WatchPage = () => {
         setResumePrompt(null);
       }
     }
-  }, [currentUser?.username, id, currentEpName]);
+  }, [currentUser?.username, canonicalId, currentEpName]);
 
   // Initial history recording when entering watch page
   useEffect(() => {
-    if (currentUser?.username && currentMovie && currentMovie.id) {
+    if (movieReady && activeEpisodeObj && currentUser?.username && currentMovie?.id) {
       recordWatchHistory(currentUser.username, currentMovie, currentEpName);
     }
   }, [currentUser?.username, currentMovie, currentEpName]);
 
   // Throttled playback position tracking
   const handleTimeUpdate = useCallback((currentTime, duration) => {
-    if (!currentUser?.username || !id) return;
+    if (!movieReady || !activeEpisodeObj || !currentUser?.username || !canonicalId || resumePrompt) return;
     
     // Save to DB every 2.5 seconds or when currentTime progresses noticeably
     if (Math.abs(currentTime - lastSavedTimeRef.current) >= 2.5) {
       lastSavedTimeRef.current = currentTime;
-      updateWatchPlaybackPosition(currentUser.username, id, currentEpName, currentTime, duration);
+      updateWatchPlaybackPosition(currentUser.username, canonicalId, currentEpName, currentTime, duration);
     }
-  }, [currentUser?.username, id, currentEpName]);
+  }, [currentUser?.username, canonicalId, currentEpName, movieReady, activeEpisodeObj, resumePrompt]);
 
   // Telemetry Heartbeat / Events
   const handleVideoPlay = () => {
+    if (playedKeyRef.current === canonicalId + ':' + currentEpName) return;
+    playedKeyRef.current = canonicalId + ':' + currentEpName;
     if (currentMovie?.id) {
       trackEvent({
         movieId: currentMovie.id,
@@ -183,22 +187,6 @@ const WatchPage = () => {
     }
   };
 
-  // Track pause/exit when component unmounts
-  useEffect(() => {
-    return () => {
-      if (lastSavedTimeRef.current > 0) {
-        trackEvent({
-          userId: currentUser?.username || 'anonymous',
-          movieId: id,
-          actionType: 'pause',
-          watchTime: lastSavedTimeRef.current,
-          videoQuality: currentMovie?.quality || '1080p'
-        });
-      }
-    };
-  }, [id, currentUser?.username, currentMovie]);
-
-
   // Action: Resume from saved position
   const handleResumeWatching = () => {
     if (resumePrompt && playerRef.current) {
@@ -211,8 +199,8 @@ const WatchPage = () => {
   // Action: Restart from beginning (0s)
   const handleRestartFromBeginning = () => {
     setResumePrompt(null);
-    if (currentUser?.username && id) {
-      updateWatchPlaybackPosition(currentUser.username, id, currentEpName, 0);
+    if (movieReady && activeEpisodeObj && currentUser?.username && canonicalId) {
+      updateWatchPlaybackPosition(currentUser.username, canonicalId, currentEpName, 0);
     }
     if (playerRef.current) {
       playerRef.current.seekTo(0);
@@ -235,8 +223,10 @@ const WatchPage = () => {
   const handleToggleFavorite = async () => {
     if (!currentMovie?.id) return;
     const username = currentUser?.username || 'anonymous';
-    const res = await toggleMovieLike(currentMovie.id, username);
-    setIsFavorite(res.is_liked);
+    try {
+      const res = await toggleMovieLike(currentMovie.id, username);
+      setIsFavorite(res.is_liked);
+    } catch { /* Global API status reports failure. */ }
   };
 
   const handleShare = () => {
@@ -252,7 +242,10 @@ const WatchPage = () => {
     navigate(`/movie/${movieSlug}/tap-${cleanNum}`);
   };
 
-  if (isLoading || !currentMovie) {
+  if (!isLoading && (!currentMovie || !activeEpisodeObj || !activeStreamUrl)) {
+    return <div role="status" className="min-h-screen pt-32 text-center text-white">{loadError || 'Không tìm thấy phim hoặc tập phim.'}</div>;
+  }
+  if (isLoading || !movieReady) {
     return (
       <div className="min-h-screen bg-background text-white flex flex-col justify-center items-center space-y-4">
         <div className="w-12 h-12 rounded-full border-4 border-neon-red border-t-transparent animate-spin"></div>
@@ -334,8 +327,7 @@ const WatchPage = () => {
 
         {/* Video Player Container */}
         <div className="w-full bg-surface-card rounded-2xl overflow-hidden border border-glass-border shadow-2xl">
-          <VideoPlayer 
-            key={`${activeId}-${currentEpName}-${activeStreamUrl}`}
+          <VideoPlayer key={`${activeId}-${currentEpName}-${activeStreamUrl}`}
             ref={playerRef}
             url={activeStreamUrl}
             title={`${formattedTitle} - Tập ${currentEpName} (${quality})`}

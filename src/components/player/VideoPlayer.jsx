@@ -22,6 +22,8 @@ const VideoPlayer = forwardRef(({
   onPause,
   className = "" 
 }, ref) => {
+  const callbacks = useRef({ onTimeUpdate, onPlay, onPause });
+  callbacks.current = { onTimeUpdate, onPlay, onPause };
   const artRef = useRef(null);
   const artInstanceRef = useRef(null);
   const hlsInstanceRef = useRef(null);
@@ -216,37 +218,18 @@ const VideoPlayer = forwardRef(({
       },
     });
 
-    // Hook timeupdate, pause, and ended events to notify parent
-    art.on('video:play', () => {
-      if (onPlay) {
-        onPlay();
-      }
-    });
-
-    art.on('video:timeupdate', () => {
-      if (onTimeUpdate && typeof art.currentTime === 'number') {
-        onTimeUpdate(art.currentTime, art.duration || 0);
-      }
-    });
-
-    art.on('video:pause', () => {
-      if (onPause && typeof art.currentTime === 'number') {
-        onPause(art.currentTime);
-      }
-      if (onTimeUpdate && typeof art.currentTime === 'number') {
-        onTimeUpdate(art.currentTime, art.duration || 0);
-      }
-    });
-
-    art.on('video:ended', () => {
-      if (onTimeUpdate && typeof art.currentTime === 'number') {
-        onTimeUpdate(art.currentTime, art.duration || 0);
-      }
-    });
-
+    let disposed = false;
+    art.on('video:play', () => { if (!disposed) callbacks.current.onPlay?.(); });
+    const savePosition = () => {
+      if (!disposed && Number.isFinite(art.currentTime)) callbacks.current.onTimeUpdate?.(art.currentTime, art.duration || 0);
+    };
+    art.on('video:timeupdate', savePosition);
+    art.on('video:pause', () => { if (!disposed) callbacks.current.onPause?.(art.currentTime); savePosition(); });
+    art.on('video:ended', savePosition);
     artInstanceRef.current = art;
 
     return () => {
+      disposed = true;
       if (artInstanceRef.current && artInstanceRef.current.destroy) {
         artInstanceRef.current.destroy(true);
       }

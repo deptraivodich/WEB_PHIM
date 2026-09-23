@@ -18,7 +18,8 @@ const MovieCard = ({
   layoutMode = 'grid',
   isFirst = false,
   isLast = false,
-  showHoverPopup = true
+  showHoverPopup = true,
+  tabIndex = 0
 }) => {
   const [imgError, setImgError] = useState(false);
 
@@ -70,7 +71,7 @@ const MovieCard = ({
 
       {/* 1. NORMAL CARD VIEW */}
       <div className="w-full h-full space-y-2">
-        <Link to={`/movie/${movieSlug}`} onClick={handleTrackClick} className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
+        <Link to={`/movie/${movieSlug}`} onClick={handleTrackClick} tabIndex={tabIndex} className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
           <img
             src={poster}
             alt={formattedTitle}
@@ -143,6 +144,7 @@ const MovieCard = ({
               <Link
                 to={`/movie/${movieSlug}/tap-1`}
                 onClick={handleTrackClick}
+                tabIndex={tabIndex}
                 className="flex-1 bg-[#ffce45] text-black font-extrabold py-1.5 px-2.5 rounded-lg hover:bg-amber-300 transition-colors flex justify-center items-center gap-1 shadow-md text-xs"
               >
                 <svg className="w-3.5 h-3.5 fill-current flex-shrink-0" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
@@ -151,6 +153,7 @@ const MovieCard = ({
 
               <button
                 type="button"
+                tabIndex={tabIndex}
                 className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
                 title="Thêm vào yêu thích"
               >
@@ -160,6 +163,7 @@ const MovieCard = ({
               <Link
                 to={`/movie/${movieSlug}`}
                 onClick={handleTrackClick}
+                tabIndex={tabIndex}
                 className="border border-gray-600 bg-[#2a2d3a]/60 text-white py-1.5 px-2.5 rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-1 whitespace-nowrap font-medium text-xs cursor-pointer"
                 title="Xem chi tiết phim"
               >

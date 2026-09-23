@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import MovieCard from '../../components/ui/MovieCard';
+import ContinuousMarquee from '../../components/ui/ContinuousMarquee';
 import WatchHistoryModal from '../../components/ui/WatchHistoryModal';
 import FavoritesModal from '../../components/ui/FavoritesModal';
 import { getMovies, getHomepageLayout } from '../../services/movieService';
@@ -9,6 +10,7 @@ import {
   getUserFavorites, 
   getLeaderboardTrending, 
   getLeaderboardFavorites, 
+  getTodaySeries,
   getRecentComments 
 } from '../../services/interactionService';
 import { useAuth } from '../../contexts/AuthContext';
@@ -32,6 +34,7 @@ const HomePage = () => {
   const [isFavoritesModalOpen, setIsFavoritesModalOpen] = useState(false);
 
   // Real Interaction Leaderboards
+  const [todaySeries, setTodaySeries] = useState([]);
   const [trendingLeaderboard, setTrendingLeaderboard] = useState([]);
   const [favoritesLeaderboard, setFavoritesLeaderboard] = useState([]);
   const [recentCommentsList, setRecentCommentsList] = useState([]);
@@ -61,16 +64,18 @@ const HomePage = () => {
   // Refresh leaderboards
   const refreshLeaderboards = useCallback(async () => {
     try {
-      const [trendingData, favData, commentsData] = await Promise.all([
+      const [trendingData, favData, commentsData, todayData] = await Promise.all([
         getLeaderboardTrending(),
         getLeaderboardFavorites(),
-        getRecentComments(8)
+        getRecentComments(8),
+        getTodaySeries()
       ]);
 
       // Filter: Lượt xem phải >= 1 (tuyệt đối không chèn phim 0 view)
       const validTrending = (Array.isArray(trendingData) ? trendingData : [])
         .filter(item => (Number(item?.views) || 0) >= 1);
       setTrendingLeaderboard(validTrending);
+      setTodaySeries(todayData);
 
       // Filter: Số tim phải >= 1
       const validFavs = (Array.isArray(favData) ? favData : [])
@@ -188,13 +193,11 @@ const HomePage = () => {
   }, [favoritesLeaderboard, validAllMovies]);
 
   // Top 10 Phim Bộ Hôm Nay
-  const top10Movies = useMemo(() => {
-    if (trendingRankedMovies.length > 0) {
-      return trendingRankedMovies.slice(0, 10);
-    }
-    const fromLayout = layout?.top10Movies ? getSectionMovies(layout.top10Movies) : [];
-    return fromLayout.length > 0 ? fromLayout : validAllMovies.slice(0, 10);
-  }, [layout, getSectionMovies, validAllMovies, trendingRankedMovies]);
+  const top10Movies = useMemo(() => todaySeries
+    .map(item => {
+      const movie = validAllMovies.find(m => m.id === item.movie_id);
+      return movie ? { ...movie, views: item.views } : null;
+    }).filter(Boolean), [todaySeries, validAllMovies]);
 
   const cinemaMovies = useMemo(() => {
     const fromLayout = layout?.cinemaMovies ? getSectionMovies(layout.cinemaMovies) : [];
@@ -386,23 +389,18 @@ const HomePage = () => {
               <p className="text-xs text-gray-500">Vào Admin Manager để thêm phim mới hoặc Magic Import!</p>
             </div>
           ) : (
-            <div className="flex flex-nowrap overflow-x-auto overflow-y-visible gap-3 sm:gap-4 w-full pb-12 pt-4 -my-4 scroll-smooth no-scrollbar">
-              {validAllMovies
-                .filter(movie => movie !== undefined && movie !== null && movie.id)
-                .slice(0, 10)
-                .map((movie, idx, arr) => {
-                  const movieKey = movie.id || `recent-${idx}`;
-                  return (
-                    <MovieCard 
-                      key={movieKey} 
-                      movie={movie} 
-                      layoutMode="carousel"
-                      isFirst={idx === 0} 
-                      isLast={idx === arr.length - 1} 
-                    />
-                  );
-                })}
-            </div>
+            <ContinuousMarquee
+              items={validAllMovies.filter(movie => movie !== undefined && movie !== null && movie.id).slice(0, 10)}
+              direction="right"
+              speed={30}
+              renderItem={(movie, idx, isClone) => (
+                <MovieCard
+                  movie={movie}
+                  layoutMode="carousel"
+                  tabIndex={isClone ? -1 : 0}
+                />
+              )}
+            />
           )}
         </section>
 
@@ -467,28 +465,24 @@ const HomePage = () => {
               </h2>
             </div>
 
-            <div className="flex flex-nowrap overflow-x-auto overflow-y-visible gap-3 sm:gap-4 w-full pb-12 pt-8 -my-4 scroll-smooth no-scrollbar">
-              {top10Movies
-                .filter(movie => movie !== undefined && movie !== null && movie.id)
-                .slice(0, 10)
-                .map((movie, idx, arr) => {
-                  const itemKey = movie.id || `top10-${idx}`;
-                  return (
-                    <div key={itemKey} className="relative group flex-none">
-                      <div className="absolute -top-4 -left-3 z-20 text-4xl sm:text-5xl font-black italic text-amber-400 drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)] stroke-black pointer-events-none">
-                        #{idx + 1}
-                      </div>
-                      <MovieCard 
-                        movie={movie} 
-                        layoutMode="carousel"
-                        isFirst={idx === 0} 
-                        isLast={idx === arr.length - 1} 
-                        showHoverPopup={false}
-                      />
-                    </div>
-                  );
-                })}
-            </div>
+            <ContinuousMarquee
+              items={top10Movies.filter(movie => movie !== undefined && movie !== null && movie.id).slice(0, 10)}
+              direction="left"
+              speed={30}
+              renderItem={(movie, idx, isClone) => (
+                <div className="relative group flex-none">
+                  <div className="absolute -top-4 -left-3 z-20 text-4xl sm:text-5xl font-black italic text-amber-400 drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)] stroke-black pointer-events-none select-none">
+                    #{idx + 1}
+                  </div>
+                  <MovieCard
+                    movie={movie}
+                    layoutMode="carousel"
+                    showHoverPopup={false}
+                    tabIndex={isClone ? -1 : 0}
+                  />
+                </div>
+              )}
+            />
           </section>
         )}
 
@@ -824,7 +818,7 @@ const HomePage = () => {
                             </span>
                           </div>
                           <p className="text-xs text-gray-200 line-clamp-1 italic mt-0.5 group-hover:text-white">
-                            "{cmt.content}"
+                            &quot;{cmt.content}&quot;
                           </p>
                           <p className="text-[10px] text-amber-400/80 truncate mt-0.5 font-medium">
                             🎬 {formatVietnameseSentenceCase(movieTitle)}

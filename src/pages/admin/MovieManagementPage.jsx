@@ -443,16 +443,13 @@ const MovieManagementPage = () => {
     const targetMovie = deletingMovie;
     const targetId = targetMovie.id;
 
-    // 1. Close Modal & Optimistically Update UI immediately
-    setDeletingMovie(null);
-    setMovies(prev => prev.filter(m => m.id !== targetId));
-    showToast('success', `🗑️ Đã xóa phim "${targetMovie.title || 'này'}" khỏi hệ thống!`);
-
-    // 2. Perform backend delete in background
     try {
       await deleteMovie(targetId);
+      setDeletingMovie(null);
+      setMovies(prev => prev.filter(m => m.id !== targetId));
+      showToast('success', 'Đã xóa phim "' + (targetMovie.title || 'này') + '".');
     } catch (err) {
-      console.error("Background delete failed:", err);
+      showToast('error', err.message || 'Chưa xác nhận xóa phim. Vui lòng tải lại.');
     }
   };
 
@@ -1077,7 +1074,7 @@ const MovieManagementPage = () => {
                   })}
 
                   {(!editingMovie.episodes || editingMovie.episodes.length === 0) && (
-                    <p className="text-center text-xs text-gray-500 py-3">Chưa có tập phim nào. Nhấn "+ Thêm Tập Mới" để thêm tập.</p>
+                    <p className="text-center text-xs text-gray-500 py-3">Chưa có tập phim nào. Nhấn &quot;+ Thêm Tập Mới&quot; để thêm tập.</p>
                   )}
                 </div>
               </div>
@@ -1278,7 +1275,7 @@ const MovieManagementPage = () => {
             </div>
             <h3 className="text-lg font-extrabold text-white">Xác Nhận Xóa Phim?</h3>
             <p className="text-xs text-gray-300">
-              Bạn có chắc chắn muốn xóa phim <strong className="text-neon-red">"{deletingMovie?.title || 'này'}"</strong> khỏi kho dữ liệu không? Thao tác này không thể hoàn tác.
+              Bạn có chắc chắn muốn xóa phim <strong className="text-neon-red">&quot;{deletingMovie?.title || 'này'}&quot;</strong> khỏi kho dữ liệu không? Thao tác này không thể hoàn tác.
             </p>
             <div className="flex items-center justify-center space-x-4 pt-2">
               <button 

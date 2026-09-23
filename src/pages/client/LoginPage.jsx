@@ -78,6 +78,7 @@ const LoginPage = () => {
       setError('Vui lòng nhập mật khẩu.');
       return;
     }
+    if (regPassword.length < 12 || regPassword.length > 128) { setError('Mật khẩu cần từ 12 đến 128 ký tự.'); return; }
     if (regPassword !== regConfirm) {
       setError('Mật khẩu xác nhận không khớp.');
       return;
@@ -311,7 +312,9 @@ const LoginPage = () => {
                     <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500 text-sm">🔒</span>
                     <input
                       type={regShowPw ? 'text' : 'password'}
-                      value={regPassword}
+                      minLength={12}
+                  maxLength={128}
+                  value={regPassword}
                       onChange={(e) => setRegPassword(e.target.value)}
                       placeholder="Tối thiểu 6 ký tự..."
                       autoComplete="new-password"

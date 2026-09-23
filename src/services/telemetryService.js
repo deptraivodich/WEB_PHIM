@@ -1,32 +1,20 @@
-export const trackEvent = ({ userId, movieId, actionType, watchTime = 0, videoQuality = '1080p' }) => {
-  const url = 'http://localhost:8000/api/track';
-  const payload = {
-    user_id: userId || 'anonymous',
-    movie_id: movieId,
-    action_type: actionType,
-    watch_time: watchTime,
-    video_quality: videoQuality,
-    timestamp: new Date().toISOString()
-  };
-
-  const data = JSON.stringify(payload);
-
-  if (navigator.sendBeacon) {
-    // navigator.sendBeacon requires Blob for application/json
-    const blob = new Blob([data], { type: 'application/json' });
-    const success = navigator.sendBeacon(url, blob);
-    if (success) return;
+import { api } from './api.js';
+export const ALLOWED_ACTIONS = new Set(['click_poster', 'view_detail', 'play', 'pause', 'seek', 'heartbeat', 'search', 'complete']);
+export function telemetryPayload({ movieId, actionType, watchTime = 0, videoQuality = '' }, eventId = crypto.randomUUID()) {
+  const action = actionType === 'click' ? 'click_poster' : actionType;
+  if (!movieId || !ALLOWED_ACTIONS.has(action)) return null;
+  return { event_id: eventId, movie_id: String(movieId), action_type: action,
+    watch_time: Math.max(0, Math.min(3600, Math.floor(watchTime))), video_quality: videoQuality };
+}
+export async function trackEvent(event) {
+  const payload = telemetryPayload(event);
+  if (!payload) return false;
+  try {
+    await api('/api/track', { method: 'POST', body: payload, keepalive: true });
+    return true;
+  } catch {
+    // No unbounded browser queue. The caller may inspect false; no fake success.
+    window.dispatchEvent(new Event('webphim-telemetry-failed'));
+    return false;
   }
-
-  // Fallback to fetch with keepalive if sendBeacon fails or is unsupported
-  fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: data,
-    keepalive: true
-  }).catch(error => {
-    console.error('Telemetry track failed:', error);
-  });
-};
+}

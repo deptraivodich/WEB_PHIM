@@ -170,7 +170,7 @@ const CategoryPage = () => {
                 {searchQueryParam && (
                   <>
                     <span>/</span>
-                    <span className="text-neon-cyan font-normal">Từ khóa: "{searchQueryParam}"</span>
+                    <span className="text-neon-cyan font-normal">Từ khóa: &quot;{searchQueryParam}&quot;</span>
                   </>
                 )}
               </div>
@@ -342,7 +342,7 @@ const CategoryPage = () => {
                   onClick={() => setMatchMode('OR')}
                   className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-black text-xs font-black transition-all shadow-md cursor-pointer"
                 >
-                  🔄 Đổi sang chế độ "Khớp một phần (OR)"
+                  🔄 Đổi sang chế độ &quot;Khớp một phần (OR)&quot;
                 </button>
               )}
               <button
