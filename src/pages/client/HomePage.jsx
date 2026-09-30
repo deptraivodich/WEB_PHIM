@@ -1,15 +1,17 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { RiErrorWarningLine } from 'react-icons/ri';
 import MovieCard from '../../components/ui/MovieCard';
+import ContinuousMarquee from '../../components/ui/ContinuousMarquee';
 import WatchHistoryModal from '../../components/ui/WatchHistoryModal';
 import FavoritesModal from '../../components/ui/FavoritesModal';
 import { getMovies, getHomepageLayout } from '../../services/movieService';
 import { getUserWatchHistory } from '../../services/historyService';
-import { 
-  getUserFavorites, 
-  getLeaderboardTrending, 
-  getLeaderboardFavorites, 
-  getRecentComments 
+import {
+  getUserFavorites,
+  getLeaderboardTrending,
+  getLeaderboardFavorites,
+  getRecentComments
 } from '../../services/interactionService';
 import { useAuth } from '../../contexts/AuthContext';
 import { formatVietnameseSentenceCase, generateSlug } from '../../utils/textUtils';
@@ -233,7 +235,7 @@ const HomePage = () => {
 
   return (
     <div className="min-h-screen bg-background text-gray-100 flex flex-col pb-24 overflow-x-hidden">
-      
+
       {/* 1. HERO BANNER SECTION - Defensively guarded against null / empty / loading state */}
       {isLoading ? (
         <div className="relative w-full h-[70vh] sm:h-[78vh] md:h-[84vh] min-h-[540px] max-h-[780px] bg-[#121524] animate-pulse flex items-end p-8 md:p-16">
@@ -246,7 +248,7 @@ const HomePage = () => {
         </div>
       ) : activeHeroMovie ? (
         <div className="relative w-full h-[70vh] sm:h-[78vh] md:h-[84vh] min-h-[540px] max-h-[780px] overflow-hidden">
-          
+
           {/* Background Image with Smooth Fade */}
           <div className="absolute inset-0">
             <img
@@ -262,7 +264,7 @@ const HomePage = () => {
           {/* Hero Content Overlay with pt-24 to safely clear the fixed top navbar */}
           <div className="absolute inset-0 max-w-7xl mx-auto px-4 md:px-12 flex flex-col justify-end pt-24 pb-14 md:pb-20 z-10">
             <div className="max-w-2xl lg:max-w-3xl space-y-3.5">
-              
+
               {/* Badges */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="px-2.5 py-1 rounded-md bg-neon-red text-white text-xs font-black uppercase tracking-wider shadow-neon-red">
@@ -283,7 +285,7 @@ const HomePage = () => {
               <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-black text-white leading-snug drop-shadow-2xl font-display tracking-tight line-clamp-3">
                 {formatVietnameseSentenceCase(activeHeroMovie?.title || 'Phim mới')}
               </h1>
-              
+
               {activeHeroMovie?.originalTitle && (
                 <p className="text-xs sm:text-sm md:text-base text-amber-300 font-semibold drop-shadow-md">
                   {activeHeroMovie.originalTitle}
@@ -306,13 +308,14 @@ const HomePage = () => {
                     <span>Xem Ngay</span>
                   </Link>
                 )}
-                
+
                 {activeHeroMovie?.id && (
                   <Link
                     to={`/movie/${generateSlug(activeHeroMovie.title) || activeHeroMovie.id}`}
                     className="px-5 sm:px-7 py-3 rounded-xl bg-white/15 hover:bg-white/25 text-white font-bold text-xs sm:text-sm backdrop-blur-md border border-white/20 transition-all flex items-center gap-2 hover:scale-105 cursor-pointer"
                   >
-                    <span>ℹ Chi Tiết Phim</span>
+                    <RiErrorWarningLine className="text-base sm:text-lg flex-shrink-0" />
+                    <span>Chi Tiết Phim</span>
                   </Link>
                 )}
               </div>
@@ -329,9 +332,8 @@ const HomePage = () => {
                   <button
                     key={dotKey}
                     onClick={() => setCurrentSlide(idx)}
-                    className={`h-1.5 rounded-full transition-all duration-300 cursor-pointer ${
-                      currentSlide === idx ? 'w-8 bg-amber-400 shadow-[0_0_10px_#f59e0b]' : 'w-2 bg-white/30 hover:bg-white/60'
-                    }`}
+                    className={`h-1.5 rounded-full transition-all duration-300 cursor-pointer ${currentSlide === idx ? 'w-8 bg-amber-400 shadow-[0_0_10px_#f59e0b]' : 'w-2 bg-white/30 hover:bg-white/60'
+                      }`}
                     aria-label={`Slide ${idx + 1}`}
                   />
                 );
@@ -358,7 +360,7 @@ const HomePage = () => {
 
       {/* Main Content Container */}
       <div className="px-4 md:px-12 -mt-4 relative z-20 space-y-12 max-w-7xl mx-auto">
-        
+
         {/* Section: Phim mới cập nhật */}
         <section className="space-y-4 overflow-visible">
           <div className="flex items-center justify-between">
@@ -386,23 +388,19 @@ const HomePage = () => {
               <p className="text-xs text-gray-500">Vào Admin Manager để thêm phim mới hoặc Magic Import!</p>
             </div>
           ) : (
-            <div className="flex flex-nowrap overflow-x-auto overflow-y-visible gap-3 sm:gap-4 w-full pb-12 pt-4 -my-4 scroll-smooth no-scrollbar">
-              {validAllMovies
-                .filter(movie => movie !== undefined && movie !== null && movie.id)
-                .slice(0, 10)
-                .map((movie, idx, arr) => {
-                  const movieKey = movie.id || `recent-${idx}`;
-                  return (
-                    <MovieCard 
-                      key={movieKey} 
-                      movie={movie} 
-                      layoutMode="carousel"
-                      isFirst={idx === 0} 
-                      isLast={idx === arr.length - 1} 
-                    />
-                  );
-                })}
-            </div>
+            <ContinuousMarquee
+              items={validAllMovies.filter(movie => movie !== undefined && movie !== null && movie.id).slice(0, 10)}
+              direction="right"
+              speed={30}
+              renderItem={(movie, idx, isClone) => (
+                <MovieCard
+                  movie={movie}
+                  layoutMode="carousel"
+                  showHoverPopup={false}
+                  tabIndex={isClone ? -1 : 0}
+                />
+              )}
+            />
           )}
         </section>
 
@@ -410,7 +408,7 @@ const HomePage = () => {
         {userFavoriteMovies.length > 0 && (
           <section className="space-y-4 overflow-visible animate-fadeIn">
             <div className="flex items-center justify-between">
-              <div 
+              <div
                 onClick={() => setIsFavoritesModalOpen(true)}
                 className="flex items-center space-x-2.5 cursor-pointer group select-none"
                 title="Bấm vào đây để mở toàn bộ danh sách phim yêu thích"
@@ -437,22 +435,38 @@ const HomePage = () => {
             </div>
 
             {/* Trượt ngang tối đa 10 phim yêu thích */}
-            <div className="flex flex-nowrap overflow-x-auto overflow-y-visible gap-3 sm:gap-4 w-full pb-12 pt-4 -my-4 scroll-smooth no-scrollbar">
-              {userFavoriteMovies
-                .slice(0, 10)
-                .map((movie, idx, arr) => {
-                  const favCardKey = movie.id || `user-fav-${idx}`;
-                  return (
-                    <MovieCard 
-                      key={favCardKey} 
-                      movie={movie} 
-                      layoutMode="carousel"
-                      isFirst={idx === 0} 
-                      isLast={idx === arr.length - 1} 
-                    />
-                  );
-                })}
-            </div>
+            {userFavoriteMovies.length >= 4 ? (
+              <ContinuousMarquee
+                items={userFavoriteMovies.slice(0, 10)}
+                direction="right"
+                speed={25}
+                renderItem={(movie, idx, isClone) => (
+                  <MovieCard
+                    movie={movie}
+                    layoutMode="carousel"
+                    showHoverPopup={false}
+                    tabIndex={isClone ? -1 : 0}
+                  />
+                )}
+              />
+            ) : (
+              <div className="flex flex-nowrap overflow-x-auto overflow-y-visible gap-3 sm:gap-4 w-full pb-12 pt-4 -my-4 scroll-smooth no-scrollbar">
+                {userFavoriteMovies
+                  .slice(0, 10)
+                  .map((movie, idx, arr) => {
+                    const favCardKey = movie.id || `user-fav-${idx}`;
+                    return (
+                      <MovieCard
+                        key={favCardKey}
+                        movie={movie}
+                        layoutMode="carousel"
+                        isFirst={idx === 0}
+                        isLast={idx === arr.length - 1}
+                      />
+                    );
+                  })}
+              </div>
+            )}
           </section>
         )}
 
@@ -467,28 +481,24 @@ const HomePage = () => {
               </h2>
             </div>
 
-            <div className="flex flex-nowrap overflow-x-auto overflow-y-visible gap-3 sm:gap-4 w-full pb-12 pt-8 -my-4 scroll-smooth no-scrollbar">
-              {top10Movies
-                .filter(movie => movie !== undefined && movie !== null && movie.id)
-                .slice(0, 10)
-                .map((movie, idx, arr) => {
-                  const itemKey = movie.id || `top10-${idx}`;
-                  return (
-                    <div key={itemKey} className="relative group flex-none">
-                      <div className="absolute -top-4 -left-3 z-20 text-4xl sm:text-5xl font-black italic text-amber-400 drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)] stroke-black pointer-events-none">
-                        #{idx + 1}
-                      </div>
-                      <MovieCard 
-                        movie={movie} 
-                        layoutMode="carousel"
-                        isFirst={idx === 0} 
-                        isLast={idx === arr.length - 1} 
-                        showHoverPopup={false}
-                      />
-                    </div>
-                  );
-                })}
-            </div>
+            <ContinuousMarquee
+              items={top10Movies.filter(movie => movie !== undefined && movie !== null && movie.id).slice(0, 10)}
+              direction="left"
+              speed={30}
+              renderItem={(movie, idx, isClone) => (
+                <div className="relative group flex-none">
+                  <div className="absolute -top-4 -left-3 z-20 text-4xl sm:text-5xl font-black italic text-amber-400 drop-shadow-[0_4px_10px_rgba(0,0,0,0.9)] stroke-black pointer-events-none select-none">
+                    #{idx + 1}
+                  </div>
+                  <MovieCard
+                    movie={movie}
+                    layoutMode="carousel"
+                    showHoverPopup={false}
+                    tabIndex={isClone ? -1 : 0}
+                  />
+                </div>
+              )}
+            />
           </section>
         )}
 
@@ -496,7 +506,7 @@ const HomePage = () => {
         {currentUser && carouselHistory.length > 0 && (
           <section className="space-y-4 overflow-visible animate-fadeIn">
             <div className="flex items-center justify-between">
-              <div 
+              <div
                 onClick={() => setIsHistoryModalOpen(true)}
                 className="flex items-center space-x-2.5 cursor-pointer group select-none"
                 title="Bấm vào đây để mở toàn bộ danh sách lịch sử xem phim"
@@ -535,8 +545,8 @@ const HomePage = () => {
                 const itemSlug = generateSlug(item.title) || item.movieId;
 
                 return (
-                  <div 
-                    key={historyCardKey} 
+                  <div
+                    key={historyCardKey}
                     className="snap-start flex-none w-36 sm:w-44 relative group cursor-pointer select-none transition-transform duration-300 hover:scale-105 hover:z-50"
                   >
                     {/* Episode badge at top-left */}
@@ -547,11 +557,11 @@ const HomePage = () => {
                     </div>
 
                     <Link to={`/movie/${itemSlug}/tap-${item.episode || '1'}`} className="block relative w-full aspect-[2/3] rounded-xl overflow-hidden border border-white/10 shadow-xl group-hover:border-neon-cyan/50 transition-colors">
-                      <img 
-                        src={item.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'} 
-                        alt={formattedTitle} 
+                      <img
+                        src={item.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'}
+                        alt={formattedTitle}
                         onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'; }}
-                        className="w-full h-full object-cover" 
+                        className="w-full h-full object-cover"
                       />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-80"></div>
                       <div className="absolute bottom-2 left-2 right-2 space-y-0.5">
@@ -573,7 +583,7 @@ const HomePage = () => {
                           className="w-full h-full object-cover"
                         />
                         <div className="absolute inset-0 bg-gradient-to-t from-[#14151a] via-[#14151a]/50 to-transparent"></div>
-                        
+
                         <div className="absolute top-2 left-2 z-10 flex flex-wrap items-center gap-1.5">
                           <span className="px-2 py-0.5 rounded text-[10px] font-black bg-neon-cyan text-black shadow-md">
                             Đang xem: Tập {item.episode || '1'}
@@ -659,11 +669,11 @@ const HomePage = () => {
                   const cinemaKey = movie.id || `cinema-${idx}`;
                   return (
                     <div key={cinemaKey} className="relative group flex-none">
-                      <MovieCard 
-                        movie={movie} 
+                      <MovieCard
+                        movie={movie}
                         layoutMode="carousel"
-                        isFirst={idx === 0} 
-                        isLast={idx === arr.length - 1} 
+                        isFirst={idx === 0}
+                        isLast={idx === arr.length - 1}
                         showHoverPopup={false}
                       />
                       <div className="absolute top-2 right-2 z-10 pointer-events-none">
@@ -686,14 +696,14 @@ const HomePage = () => {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
+
             {/* Cột 1: Sôi nổi nhất (Xếp hạng theo lượt xem giảm dần, views >= 1) */}
             <div className="glass-panel p-5 rounded-2xl border border-glass-border space-y-4">
               <h3 className="text-sm font-extrabold text-amber-300 flex items-center justify-between border-b border-white/10 pb-3">
                 <span className="flex items-center gap-2">🔥 Sôi Nổi Nhất</span>
                 <span className="text-[10px] text-gray-400">Lượt xem</span>
               </h3>
-              
+
               <div className="space-y-3">
                 {trendingRankedMovies.length === 0 ? (
                   <div className="py-12 text-center text-gray-400 text-xs italic">
@@ -706,19 +716,19 @@ const HomePage = () => {
                     const viewsFormatted = (Number(item?.views) || 0).toLocaleString();
 
                     return (
-                      <Link 
-                        key={trendKey} 
-                        to={`/movie/${movieSlug}`} 
+                      <Link
+                        key={trendKey}
+                        to={`/movie/${movieSlug}`}
                         className="flex items-center space-x-3 p-2 rounded-xl hover:bg-white/5 transition-all group"
                       >
                         <span className={`text-xl font-black italic w-6 text-center ${idx === 0 ? 'text-yellow-400' : idx === 1 ? 'text-gray-300' : idx === 2 ? 'text-amber-600' : 'text-gray-500'}`}>
                           #{idx + 1}
                         </span>
-                        <img 
-                          src={item?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'} 
-                          alt={item?.title || 'Poster'} 
+                        <img
+                          src={item?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'}
+                          alt={item?.title || 'Poster'}
                           onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'; }}
-                          className="w-10 h-14 object-cover rounded-lg border border-white/10 flex-shrink-0" 
+                          className="w-10 h-14 object-cover rounded-lg border border-white/10 flex-shrink-0"
                         />
                         <div className="flex-1 min-w-0">
                           <h4 className="text-xs font-bold text-white truncate group-hover:text-amber-400">
@@ -744,7 +754,7 @@ const HomePage = () => {
                 <span className="flex items-center gap-2">❤️ Yêu Thích Nhất</span>
                 <span className="text-[10px] text-gray-400">Được yêu thích</span>
               </h3>
-              
+
               <div className="space-y-3">
                 {favoritesRankedMovies.length === 0 ? (
                   <div className="py-12 text-center text-gray-400 text-xs italic">
@@ -756,19 +766,19 @@ const HomePage = () => {
                     const movieSlug = generateSlug(item?.title) || item?.id;
 
                     return (
-                      <Link 
-                        key={favRankKey} 
-                        to={`/movie/${movieSlug}`} 
+                      <Link
+                        key={favRankKey}
+                        to={`/movie/${movieSlug}`}
                         className="flex items-center space-x-3 p-2 rounded-xl hover:bg-white/5 transition-all group"
                       >
                         <span className={`text-xl font-black italic w-6 text-center ${idx === 0 ? 'text-red-400' : idx === 1 ? 'text-gray-300' : idx === 2 ? 'text-gray-400' : 'text-gray-600'}`}>
                           #{idx + 1}
                         </span>
-                        <img 
-                          src={item?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'} 
-                          alt={item?.title || 'Poster'} 
+                        <img
+                          src={item?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'}
+                          alt={item?.title || 'Poster'}
                           onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'; }}
-                          className="w-10 h-14 object-cover rounded-lg border border-white/10 flex-shrink-0" 
+                          className="w-10 h-14 object-cover rounded-lg border border-white/10 flex-shrink-0"
                         />
                         <div className="flex-1 min-w-0">
                           <h4 className="text-xs font-bold text-white truncate group-hover:text-neon-red">
@@ -792,7 +802,7 @@ const HomePage = () => {
                 <span className="flex items-center gap-2">💬 Bình Luận Mới</span>
                 <span className="text-[10px] text-gray-400">Thảo luận thật</span>
               </h3>
-              
+
               <div className="space-y-3">
                 {recentCommentsList.length === 0 ? (
                   <div className="py-12 text-center text-gray-400 text-xs italic">
@@ -806,9 +816,9 @@ const HomePage = () => {
                     const movieSlug = generateSlug(movieTitle) || cmt.movie_id;
 
                     return (
-                      <Link 
-                        key={commentKey} 
-                        to={`/movie/${movieSlug}#comments-section`} 
+                      <Link
+                        key={commentKey}
+                        to={`/movie/${movieSlug}#comments-section`}
                         className="flex items-start space-x-3 p-2 rounded-xl hover:bg-white/5 transition-all group"
                       >
                         <div className="w-8 h-8 rounded-full bg-gradient-to-br from-neon-cyan/30 to-blue-500/30 border border-neon-cyan/40 text-neon-cyan flex items-center justify-center font-bold text-xs flex-shrink-0 mt-0.5">
@@ -854,9 +864,9 @@ const HomePage = () => {
             {/* Large Highlight Anime Banner */}
             {animeHighlight && (
               <div className="relative w-full h-56 sm:h-72 rounded-2xl overflow-hidden border border-pink-500/30 shadow-2xl flex items-end p-6">
-                <img 
-                  src={animeHighlight?.banner || animeHighlight?.poster || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1200'} 
-                  alt={animeHighlight?.title || 'Anime'} 
+                <img
+                  src={animeHighlight?.banner || animeHighlight?.poster || 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1200'}
+                  alt={animeHighlight?.title || 'Anime'}
                   onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1200'; }}
                   className="absolute inset-0 w-full h-full object-cover opacity-80 scale-105"
                 />
@@ -873,7 +883,7 @@ const HomePage = () => {
                   </p>
                   {animeHighlight?.id && (
                     <div className="pt-1">
-                      <Link 
+                      <Link
                         to={`/movie/${generateSlug(animeHighlight.title) || animeHighlight.id}/tap-1`}
                         className="inline-flex items-center space-x-2 px-5 py-2 rounded-xl bg-pink-600 hover:bg-pink-500 text-white font-bold text-xs shadow-lg transition-all"
                       >
@@ -892,17 +902,17 @@ const HomePage = () => {
                 .map((anime, idx) => {
                   const animeKey = anime?.id || `anime-${idx}`;
                   return (
-                    <Link 
-                      key={animeKey} 
-                      to={`/movie/${generateSlug(anime?.title) || anime?.id}/tap-1`} 
+                    <Link
+                      key={animeKey}
+                      to={`/movie/${generateSlug(anime?.title) || anime?.id}/tap-1`}
                       className="flex items-center space-x-3 p-3 rounded-xl bg-surface-card border border-glass-border hover:border-pink-500/50 transition-all group"
                     >
                       <div className="w-20 h-14 rounded-lg overflow-hidden flex-shrink-0 relative border border-white/10">
-                        <img 
-                          src={anime?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'} 
-                          alt={anime?.title || 'Anime'} 
+                        <img
+                          src={anime?.poster || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'}
+                          alt={anime?.title || 'Anime'}
                           onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200'; }}
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform" 
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                         />
                         <span className="absolute bottom-1 right-1 text-[9px] px-1 rounded bg-black/80 text-pink-400 font-bold">
                           {typeof anime?.episodes === 'string' ? anime.episodes : (Array.isArray(anime?.episodes) ? `${anime.episodes.length} Tập` : 'Tập 1')}

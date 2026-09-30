@@ -18,7 +18,8 @@ const MovieCard = ({
   layoutMode = 'grid',
   isFirst = false,
   isLast = false,
-  showHoverPopup = true
+  showHoverPopup = true,
+  tabIndex
 }) => {
   const [imgError, setImgError] = useState(false);
 
@@ -70,13 +71,14 @@ const MovieCard = ({
 
       {/* 1. NORMAL CARD VIEW */}
       <div className="w-full h-full space-y-2">
-        <Link to={`/movie/${movieSlug}`} onClick={handleTrackClick} className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
+        <Link to={`/movie/${movieSlug}`} tabIndex={tabIndex} onClick={handleTrackClick} draggable="false" className="block relative w-full aspect-[2/3] rounded-lg overflow-hidden bg-[#1a1e30] border border-white/10 shadow-md">
           <img
             src={poster}
             alt={formattedTitle}
             loading="lazy"
+            draggable="false"
             onError={(e) => { e.target.src = 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600'; }}
-            className="aspect-[2/3] w-full h-full object-cover rounded-lg shadow-md"
+            className="aspect-[2/3] w-full h-full object-cover rounded-lg shadow-md pointer-events-none"
           />
           {/* Bottom Badges on Image */}
           <div className="absolute bottom-2 left-2 flex items-center space-x-1.5 z-10">

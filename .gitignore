@@ -5,3 +5,6 @@ vite.config.js.timestamp-*
 .env
 .env.local
 .env.*.local
+__pycache__/
+*.py[cod]
+*.bak

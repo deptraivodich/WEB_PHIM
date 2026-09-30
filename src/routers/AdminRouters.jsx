@@ -17,11 +17,11 @@ const AdminProtectedRoute = ({ children }) => {
     return <LoadingScreen message="Đang nạp dữ liệu Admin..." />;
   }
 
-  // Not admin → redirect to login immediately
+  // Not admin → redirect to login im  mediately
   if (userRole !== 'admin') {
     return <Navigate to="/login" replace />;
   }
-
+  
   return children;
 };
 

@@ -14,45 +14,21 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || 'http://localhost:80
 
 /**
  * Kiểm tra điều kiện phim có hợp lệ để auto-update hay không
- * Nhiệm vụ 2:
- * - Trạng thái CHƯA Completed hoặc để trống (không phải Hoàn Tất chính thức).
- * - VÀ KHÔNG PHẢI là phim lẻ chiếu rạp (bỏ qua phim chỉ có 1 tập mà thời lượng dài, hoặc thể loại Movie/Chiếu rạp).
+ * @param {Object} movie
+ * @param {boolean} ongoingOnly - Nếu true, chỉ lấy phim đang phát sóng (chưa hoàn tất)
  */
-export const isEligibleForAutoUpdate = (movie) => {
+export const isEligibleForAutoUpdate = (movie, ongoingOnly = false) => {
   if (!movie || !movie.id) return false;
+
+  // Nếu không giới hạn ongoingOnly, tất cả phim có trong DB đều đủ điều kiện quét & gộp
+  if (!ongoingOnly) {
+    return true;
+  }
 
   // 1. Bỏ qua phim đã Hoàn Tất chính thức qua trường status
   const status = String(movie.status || '').toLowerCase().trim();
   if (status === 'completed' || status === 'hoàn tất' || status === 'hoan tat') {
     return false;
-  }
-
-  // 2. Bỏ qua phim lẻ chiếu rạp (bỏ qua phim chỉ có 1 tập mà thời lượng dài, hoặc thể loại Movie/Chiếu rạp)
-  const category = String(movie.category || '').toLowerCase();
-  const badge = String(movie.badge || '').toLowerCase();
-  const genres = Array.isArray(movie.genres) ? movie.genres.join(' ').toLowerCase() : String(movie.genres || '').toLowerCase();
-  const movieType = String(movie.type || '').toLowerCase();
-
-  if (movie.chieurap === true || movieType === 'single') {
-    return false;
-  }
-  if (category.includes('chiếu rạp') || category.includes('phim lẻ') || category.includes('movie')) {
-    return false;
-  }
-  if (genres.includes('chiếu rạp') || genres.includes('phim lẻ') || genres.includes('movie')) {
-    return false;
-  }
-  if (badge.includes('rạp') || badge.includes('chiếu rạp')) {
-    return false;
-  }
-
-  // Nếu chỉ có 1 tập dạng full/trọn bộ
-  const episodes = movie.episodes;
-  if (Array.isArray(episodes) && episodes.length === 1) {
-    const epName = String(episodes[0]?.name || '').toLowerCase().trim();
-    if (epName === 'full' || epName === 'trọn bộ' || epName === 'tron bo') {
-      return false;
-    }
   }
 
   return true;
@@ -168,6 +144,7 @@ export const runAutoUpdateBatch = async (batch) => {
 
 /**
  * Chạy quy trình Auto-Update Phim toàn diện
+ * Quét xoay vòng toàn bộ kho phim trong DB (Round-robin)
  */
 export const runAutoUpdate = async () => {
   try {
@@ -176,20 +153,26 @@ export const runAutoUpdate = async () => {
       return { status: 'skipped', reason: 'No movies in DB' };
     }
 
-    const eligible = allMovies.filter(isEligibleForAutoUpdate);
-    if (eligible.length === 0) {
-      return { status: 'skipped', reason: 'All movies are completed or cinema' };
+    const validMovies = allMovies.filter(m => m && m.id);
+    if (validMovies.length === 0) {
+      return { status: 'skipped', reason: 'No valid movies' };
     }
 
-    // Sắp xếp các phim chưa được cập nhật lâu nhất lên đầu (Round-robin xoay vòng hàng đợi)
-    eligible.sort((a, b) => {
+    // Sắp xếp các phim theo thứ tự ưu tiên:
+    // 1. Phim đang phát sóng (ongoing/Active) được ưu tiên hơn
+    // 2. Phim chưa được cập nhật lâu nhất lên đầu (Round-robin xoay vòng 100% kho phim)
+    validMovies.sort((a, b) => {
+      const isOngoingA = a.status === 'ongoing' || a.status === 'Active';
+      const isOngoingB = b.status === 'ongoing' || b.status === 'Active';
+      if (isOngoingA !== isOngoingB) return isOngoingA ? -1 : 1;
+
       const timeA = new Date(a.lastAutoCrawledAt || a.updatedAt || a.updated_at || 0).getTime();
       const timeB = new Date(b.lastAutoCrawledAt || b.updatedAt || b.updated_at || 0).getTime();
       return timeA - timeB;
     });
 
     // Gửi 20 phim mỗi đợt để tối ưu tốc độ và bao phủ toàn bộ kho phim
-    const batch = eligible.slice(0, 20);
+    const batch = validMovies.slice(0, 20);
     return await runAutoUpdateBatch(batch);
   } catch (err) {
     console.warn('[Auto-Crawl] Lỗi trong tiến trình Auto-Update:', err);

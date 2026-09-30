@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import List, Optional, Any
 from datetime import datetime
 import unicodedata
-
+#test
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -929,22 +929,21 @@ async def auto_update_movies(payload: Optional[AutoUpdatePayload] = Body(default
     """
     Nhiệm vụ 2: Logic Tự Động Cào & Gộp Phim (Auto-Update)
     - Nhận danh sách phim từ Client (hoặc lấy từ SQLite nếu rỗng).
-    - Lọc các phim chưa completed và không phải phim lẻ chiếu rạp.
     - Cào lại PhimAPI, so sánh 5 trường:
-      1. Tập phim (episodes)
+      1. Tập phim (episodes - tập mới, bổ sung link)
       2. Quốc gia (country)
-      3. Đạo diễn (director)
-      4. Thông Tin (status)
+      3. Đạo diễn / Tác giả (director)
+      4. Trạng thái (status: ongoing, completed)
       5. Tập hiện tại (episode_current)
     - Nếu có thay đổi -> Gộp dữ liệu mới và trả về danh sách phim đã cập nhật.
     """
     input_movies = payload.movies if (payload and hasattr(payload, 'movies') and payload.movies) else None
 
-    # Nếu client không gửi danh sách, lấy từ SQLite sắp xếp theo thời gian cập nhật cũ nhất
+    # Nếu client không gửi danh sách, lấy từ SQLite sắp xếp theo thời gian cập nhật cũ nhất (FIFO xoay vòng toàn kho)
     if not input_movies:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM movies ORDER BY updated_at ASC")
+        cur.execute("SELECT * FROM movies ORDER BY updated_at ASC LIMIT 30")
         rows = cur.fetchall()
         input_movies = []
         for r in rows:
@@ -962,30 +961,12 @@ async def auto_update_movies(payload: Optional[AutoUpdatePayload] = Body(default
             "message": "Không có phim nào để kiểm tra cập nhật.",
             "checked_count": 0,
             "updated_count": 0,
-            "updated_movies": []
+            "updated_movies": [],
+            "checked_details": []
         }
 
-    # Lọc danh sách phim đủ điều kiện cào
-    eligible_movies = [m for m in input_movies if is_eligible_for_auto_crawl(m)]
-
-    if not eligible_movies:
-        return {
-            "status": "success",
-            "message": "Tất cả phim đều đã Hoàn Tất hoặc là phim lẻ chiếu rạp.",
-            "checked_count": 0,
-            "updated_count": 0,
-            "updated_movies": []
-        }
-
-    # Sắp xếp các phim theo thời gian cập nhật cũ nhất lên đầu (FIFO / Round-robin) để cào xoay vòng toàn bộ kho phim
-    def get_sort_timestamp(m):
-        t = m.get('updatedAt') or m.get('updated_at') or '1970-01-01'
-        return str(t)
-
-    eligible_movies.sort(key=get_sort_timestamp)
-
-    # Giới hạn xử lý tối đa 20 phim mỗi đợt gọi để tối ưu hiệu năng
-    batch_to_check = eligible_movies[:20]
+    # Nếu client gửi cụ thể một lô (batch), xử lý toàn bộ lô đó không được tự ý lọc bỏ
+    batch_to_check = input_movies
     updated_movies = []
     checked_without_change_ids = []
     checked_details = []
@@ -993,37 +974,84 @@ async def auto_update_movies(payload: Optional[AutoUpdatePayload] = Body(default
     headers = {"User-Agent": DEFAULT_USER_AGENT}
     async with httpx.AsyncClient(headers=headers, timeout=12.0, follow_redirects=True) as client:
         for movie in batch_to_check:
-            slug = movie.get('slug') or normalize_slug_str(movie.get('title') or movie.get('id'))
-            if not slug:
+            m_title = movie.get('title') or movie.get('id') or ''
+            m_orig = movie.get('originalTitle') or movie.get('original_title') or ''
+            slug = movie.get('slug') or normalize_slug_str(m_title)
+
+            if not slug and not m_orig:
+                checked_without_change_ids.append(str(movie.get('id', '')))
+                checked_details.append({
+                    "id": movie.get('id'),
+                    "title": m_title,
+                    "status": "error",
+                    "has_change": False,
+                    "changes_detail": [],
+                    "episodes_count": len(movie.get('episodes') or []),
+                    "added_episodes_count": 0,
+                    "message": f'Không xác định được tiêu đề/slug của phim "{m_title}".'
+                })
                 continue
 
             try:
-                res = await client.get(f"{PHIM_API_SINGLE_BASE.rstrip('/')}/{slug}")
-                if res.status_code != 200:
+                # Giai đoạn 1: Thử slug chính từ Tiêu đề Việt
+                res = None
+                if slug:
+                    res = await client.get(f"{PHIM_API_SINGLE_BASE.rstrip('/')}/{slug}")
+
+                # Giai đoạn 2: Nếu chưa tìm thấy (hoặc không phải 200), thử slug từ Tên Gốc (English / Original)
+                if not res or res.status_code != 200:
+                    slug_orig = normalize_slug_str(m_orig)
+                    if slug_orig and slug_orig != slug:
+                        res = await client.get(f"{PHIM_API_SINGLE_BASE.rstrip('/')}/{slug_orig}")
+                        if res.status_code == 200:
+                            slug = slug_orig
+
+                # Giai đoạn 3: Nếu vẫn không tìm thấy, gọi Search API của PhimAPI để tìm slug chính xác
+                if not res or res.status_code != 200:
+                    search_kw = m_title or m_orig
+                    if search_kw:
+                        try:
+                            clean_kw = re.sub(r'\(.*?\)', '', search_kw).strip()[:35]
+                            search_url = f"{PHIM_API_LIST_BASE.rstrip('/')}/tim-kiem?keyword={urllib.parse.quote(clean_kw)}"
+                            search_res = await client.get(search_url)
+                            if search_res.status_code == 200:
+                                search_data = search_res.json()
+                                items = search_data.get('data', {}).get('items', [])
+                                if items:
+                                    target_slug = items[0].get('slug')
+                                    if target_slug:
+                                        res = await client.get(f"{PHIM_API_SINGLE_BASE.rstrip('/')}/{target_slug}")
+                                        if res.status_code == 200:
+                                            slug = target_slug
+                        except Exception as search_err:
+                            logger.debug(f"Search fallback exception for '{m_title}': {search_err}")
+
+                if not res or res.status_code != 200:
                     checked_without_change_ids.append(str(movie.get('id', '')))
                     checked_details.append({
                         "id": movie.get('id'),
-                        "title": movie.get('title'),
+                        "title": m_title,
                         "status": "error",
                         "has_change": False,
                         "changes_detail": [],
                         "episodes_count": len(movie.get('episodes') or []),
                         "added_episodes_count": 0,
-                        "message": f'Lỗi kiểm tra "{movie.get("title")}": API phản hồi HTTP {res.status_code}'
+                        "message": f'Lỗi kiểm tra "{m_title}": API phản hồi HTTP {res.status_code if res else "No response"}'
                     })
                     continue
+
                 data = res.json()
                 if not data or not data.get('status') or not data.get('movie'):
                     checked_without_change_ids.append(str(movie.get('id', '')))
                     checked_details.append({
                         "id": movie.get('id'),
-                        "title": movie.get('title'),
+                        "title": m_title,
                         "status": "unchanged",
                         "has_change": False,
                         "changes_detail": [],
                         "episodes_count": len(movie.get('episodes') or []),
                         "added_episodes_count": 0,
-                        "message": f'"{movie.get("title")}" dữ liệu từ nguồn API chưa khả dụng, giữ nguyên.'
+                        "message": f'"{m_title}" dữ liệu từ nguồn API chưa khả dụng, giữ nguyên.'
                     })
                     continue
 
@@ -1032,7 +1060,7 @@ async def auto_update_movies(payload: Optional[AutoUpdatePayload] = Body(default
                 api_server_data = api_episodes_data[0].get('server_data', []) if api_episodes_data else []
 
                 # Trích xuất dữ liệu mới từ API
-                new_status = str(api_movie.get('status', '') or '').strip()
+                new_status = str(api_movie.get('status', '') or '').strip().lower()
                 new_ep_current = str(api_movie.get('episode_current', '') or '').strip()
 
                 # Quốc gia mới
@@ -1045,7 +1073,7 @@ async def auto_update_movies(payload: Optional[AutoUpdatePayload] = Body(default
                     new_country = str(api_country or '')
                 new_country = new_country.strip()
 
-                # Đạo diễn mới
+                # Đạo diễn / Tác giả mới
                 api_director = api_movie.get('director', [])
                 if isinstance(api_director, list):
                     new_director = ", ".join([str(d.get('name') if isinstance(d, dict) else d) for d in api_director if d])
@@ -1055,126 +1083,168 @@ async def auto_update_movies(payload: Optional[AutoUpdatePayload] = Body(default
                     new_director = str(api_director or '')
                 new_director = new_director.strip()
 
-                # So sánh 5 tiêu chí:
+                # So sánh 5 tiêu chí Thông Minh (Smart Comparison):
                 has_change = False
                 changes_detail = []
 
-                # 1. So sánh Tập phim (episodes)
+                # 1. So sánh Tập phim (episodes): gộp tập mới, bổ sung link m3u8 nếu tập cũ bị thiếu link
                 existing_eps = movie.get('episodes') or []
-                existing_ep_names = {re.sub(r'\D+', '', str(ep.get('name', ''))): (ep.get('url') or ep.get('m3u8Url') or '') for ep in existing_eps}
+                
+                def normalize_ep_key(name_or_num):
+                    s = str(name_or_num or '').strip()
+                    m = re.search(r'\d+', s)
+                    return str(int(m.group())) if m else s.lower()
 
                 merged_eps_map = {}
+                seen_urls = set()
                 for ep in existing_eps:
                     name_clean = str(ep.get('name', '')).strip()
-                    num_match = re.search(r'\d+', name_clean)
-                    key = num_match.group() if num_match else name_clean
-                    merged_eps_map[key] = {
-                        "name": str(ep.get('name', '')),
-                        "url": ep.get('url') or ep.get('m3u8Url') or ''
-                    }
+                    key = normalize_ep_key(name_clean)
+                    url = str(ep.get('url') or ep.get('m3u8Url') or '').strip()
+                    if url and url in seen_urls:
+                        continue
+                    if key and key in merged_eps_map:
+                        continue
+                    if url:
+                        seen_urls.add(url)
+                    if key:
+                        merged_eps_map[key] = {
+                            "name": name_clean or f"Tập {key}",
+                            "url": url
+                        }
 
                 new_ep_found = False
                 for idx, ep in enumerate(api_server_data):
                     ep_name = str(ep.get('name', str(idx + 1))).strip()
-                    ep_url = ep.get('link_m3u8', '') or ep.get('link_embed', '')
-                    num_match = re.search(r'\d+', ep_name)
-                    num_key = num_match.group() if num_match else ep_name
+                    ep_url = str(ep.get('link_m3u8', '') or ep.get('link_embed', '')).strip()
+                    num_key = normalize_ep_key(ep_name)
 
-                    if num_key not in existing_ep_names or not existing_ep_names[num_key]:
-                        new_ep_found = True
+                    if not num_key:
+                        continue
+
+                    # Nếu tập đã có nhưng chưa có URL mà nguồn API có URL
+                    if num_key in merged_eps_map:
+                        if not merged_eps_map[num_key].get('url') and ep_url:
+                            merged_eps_map[num_key]['url'] = ep_url
+                            has_change = True
+                        continue
+
+                    if ep_url and ep_url in seen_urls:
+                        continue
+
+                    new_ep_found = True
+                    if ep_url:
+                        seen_urls.add(ep_url)
                     merged_eps_map[num_key] = {"name": ep_name, "url": ep_url}
 
                 def sort_ep_key(item):
-                    match = re.search(r'\d+', item['name'])
+                    match = re.search(r'\d+', str(item['name']))
                     return int(match.group()) if match else 9999
 
                 merged_eps = sorted(list(merged_eps_map.values()), key=sort_ep_key)
-
                 added_episodes_count = max(0, len(merged_eps) - len(existing_eps))
                 if new_ep_found or len(merged_eps) > len(existing_eps):
                     has_change = True
-                    changes_detail.append(f"Tập mới (+{added_episodes_count} tập)")
+                    changes_detail.append(f"+{added_episodes_count} Tập mới")
 
                 # 2. So sánh Quốc gia
                 old_country = str(movie.get('country', '') or '').strip()
-                if new_country and new_country != old_country:
-                    has_change = True
-                    changes_detail.append(f"Quốc gia: {old_country} -> {new_country}")
+                has_country_update = False
+                if new_country and new_country.lower() not in ['đang cập nhật', 'dang cap nhat']:
+                    if not old_country or old_country.lower() in ['đang cập nhật', 'dang cap nhat', 'n/a'] or new_country != old_country:
+                        has_country_update = True
+                        has_change = True
+                        changes_detail.append(f"Quốc gia: {old_country or 'Chưa có'} -> {new_country}")
 
-                # 3. So sánh Đạo diễn
+                # 3. So sánh Đạo diễn / Tác giả
                 old_director = str(movie.get('director', '') or '').strip()
-                if new_director and new_director != old_director:
-                    has_change = True
-                    changes_detail.append(f"Đạo diễn: {old_director} -> {new_director}")
+                has_director_update = False
+                if new_director and new_director.lower() not in ['đang cập nhật', 'dang cap nhat']:
+                    if not old_director or old_director.lower() in ['đang cập nhật', 'dang cap nhat', 'n/a'] or new_director != old_director:
+                        has_director_update = True
+                        has_change = True
+                        changes_detail.append(f"Đạo diễn: {old_director or 'Chưa có'} -> {new_director}")
 
-                # 4. So sánh Thông Tin (status)
-                old_status = str(movie.get('status', '') or '').strip()
-                if new_status and new_status != old_status:
+                # 4. So sánh Trạng thái (status: ongoing, completed)
+                old_status = str(movie.get('status', '') or '').strip().lower()
+                has_status_update = False
+                if new_status and (new_status != old_status or old_status == 'active'):
+                    has_status_update = True
                     has_change = True
-                    changes_detail.append(f"Thông tin: {old_status} -> {new_status}")
+                    changes_detail.append(f"Trạng thái: {old_status or 'Chưa có'} -> {new_status}")
 
-                # 5. So sánh Tập hiện tại
+                # 5. So sánh Tập hiện tại (episodeCurrent)
                 old_ep_current = str(movie.get('episodeCurrent') or movie.get('episode_current') or movie.get('episodesStatus') or '').strip()
+                has_ep_current_update = False
                 if new_ep_current and new_ep_current != old_ep_current:
+                    has_ep_current_update = True
                     has_change = True
-                    changes_detail.append(f"Tập hiện tại: {old_ep_current} -> {new_ep_current}")
+                    changes_detail.append(f"Tập hiện tại: {old_ep_current or 'Chưa có'} -> {new_ep_current}")
+
+                final_country = new_country if has_country_update else (old_country or '')
+                final_director = new_director if has_director_update else (old_director or '')
+                final_status = new_status if has_status_update else (old_status or 'ongoing')
+                final_ep_current = new_ep_current if has_ep_current_update else old_ep_current
+                final_episodes_count = f"{len(merged_eps)} Tập" if merged_eps else (movie.get('episodesCount') or '1 Tập')
+                final_episodes_status = final_ep_current or f"Tập {len(merged_eps)}"
 
                 # Nếu có thay đổi -> Tiến hành gộp dữ liệu
                 if has_change:
                     updated_item = {
                         **movie,
-                        "country": new_country if new_country else movie.get('country', ''),
-                        "director": new_director if new_director else movie.get('director', ''),
-                        "status": new_status if new_status else movie.get('status', 'ongoing'),
-                        "episodeCurrent": new_ep_current if new_ep_current else movie.get('episodeCurrent', ''),
-                        "episode_current": new_ep_current if new_ep_current else movie.get('episodeCurrent', ''),
+                        "country": final_country,
+                        "director": final_director,
+                        "status": final_status,
+                        "episodeCurrent": final_ep_current,
+                        "episode_current": final_ep_current,
                         "episodes": merged_eps,
-                        "episodesCount": f"{len(merged_eps)} Tập",
-                        "episodes_count": f"{len(merged_eps)} Tập",
-                        "episodesStatus": new_ep_current or f"Tập {len(merged_eps)}",
+                        "episodesCount": final_episodes_count,
+                        "episodes_count": final_episodes_count,
+                        "episodesStatus": final_episodes_status,
+                        "slug": slug,
                         "changes_detail": changes_detail,
                         "updatedAt": datetime.utcnow().isoformat()
                     }
-                    if merged_eps and not updated_item.get('m3u8Url'):
+                    if merged_eps and (not updated_item.get('m3u8Url') or updated_item.get('m3u8Url') == ''):
                         updated_item['m3u8Url'] = merged_eps[0].get('url', '')
 
                     updated_movies.append(updated_item)
                     checked_details.append({
                         "id": movie.get('id'),
-                        "title": movie.get('title'),
+                        "title": m_title,
                         "status": "updated",
                         "has_change": True,
                         "changes_detail": changes_detail,
                         "episodes_count": len(merged_eps),
                         "added_episodes_count": added_episodes_count,
-                        "message": f'Cập nhật "{movie.get("title")}": {", ".join(changes_detail)}'
+                        "message": f'Cập nhật "{m_title}": {", ".join(changes_detail)}'
                     })
-                    logger.info(f"🔄 Đã gộp phim '{movie.get('title')}': {', '.join(changes_detail)}")
+                    logger.info(f"🔄 Đã gộp phim '{m_title}': {', '.join(changes_detail)}")
                 else:
                     checked_without_change_ids.append(str(movie.get('id', '')))
                     checked_details.append({
                         "id": movie.get('id'),
-                        "title": movie.get('title'),
+                        "title": m_title,
                         "status": "unchanged",
                         "has_change": False,
                         "changes_detail": [],
                         "episodes_count": len(existing_eps),
                         "added_episodes_count": 0,
-                        "message": f'"{movie.get("title")}" đã chuẩn xác đủ {len(existing_eps)} tập, không cần sửa.'
+                        "message": f'"{m_title}" đã chuẩn xác đủ {len(existing_eps)} tập, không cần sửa.'
                     })
 
             except Exception as e:
-                logger.warning(f"Lỗi khi kiểm tra auto-update phim {movie.get('title')}: {e}")
+                logger.warning(f"Lỗi khi kiểm tra auto-update phim {m_title}: {e}")
                 checked_without_change_ids.append(str(movie.get('id', '')))
                 checked_details.append({
                     "id": movie.get('id'),
-                    "title": movie.get('title'),
+                    "title": m_title,
                     "status": "error",
                     "has_change": False,
                     "changes_detail": [],
                     "episodes_count": len(movie.get('episodes') or []),
                     "added_episodes_count": 0,
-                    "message": f'Lỗi khi kiểm tra "{movie.get("title")}": {str(e)}'
+                    "message": f'Lỗi khi kiểm tra "{m_title}": {str(e)}'
                 })
                 continue
 

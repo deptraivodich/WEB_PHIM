@@ -9,7 +9,7 @@ import {
   getMovieComments, 
   addMovieComment 
 } from '../../services/interactionService';
-import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { formatVietnameseSentenceCase, extractCleanEpisodeNumber, formatEpisodeTitle, deduplicateEpisodes } from '../../utils/textUtils';
 import { generateSlug } from '../../utils/slugUtils';
 
 const formatTimeAgo = (dateStr) => {
@@ -81,18 +81,19 @@ const DetailFilm = () => {
 
         const formatEpisodes = (rawEps, defaultM3u8) => {
           if (Array.isArray(rawEps) && rawEps.length > 0) {
-            return rawEps.map((ep, i) => {
-              const epNum = ep.name || ep.number || (i + 1);
+            const deduped = deduplicateEpisodes(rawEps);
+            return deduped.map((ep, i) => {
+              const epNum = extractCleanEpisodeNumber(ep.name || ep.number, i + 1);
               return {
                 number: epNum,
-                title: ep.title || `Tập ${epNum}`,
+                title: formatEpisodeTitle(ep.name || ep.number, i + 1),
                 m3u8Url: ep.url || ep.m3u8Url || defaultM3u8 || ''
               };
             });
           }
           return [
             {
-              number: 1,
+              number: '1',
               title: 'Tập 1',
               m3u8Url: defaultM3u8 || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'
             }
@@ -421,7 +422,7 @@ const DetailFilm = () => {
                     className="px-8 py-3.5 rounded-xl bg-gradient-to-r from-yellow-400 via-amber-500 to-amber-600 hover:from-yellow-300 hover:to-amber-500 text-black font-extrabold text-sm sm:text-base flex items-center gap-2 shadow-[0_0_30px_rgba(251,191,36,0.6)] hover:scale-105 transition-all duration-300 cursor-pointer"
                   >
                     <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                    <span>XEM NGAY (TẬP {selectedEpisode})</span>
+                    <span>XEM NGAY ({formatEpisodeTitle(selectedEpisode).toUpperCase()})</span>
                   </Link>
 
                   {/* Circular Icon Buttons: Lượt xem, Yêu thích, Bình luận, Chia sẻ */}
@@ -501,12 +502,12 @@ const DetailFilm = () => {
                     to={`/movie/${movieSlug}/tap-${ep.number}`}
                     onClick={() => setSelectedEpisode(ep.number)}
                     className={`py-2.5 px-3 rounded-xl text-center text-xs font-bold transition-all duration-200 border ${
-                      selectedEpisode === ep.number
+                      String(selectedEpisode) === String(ep.number)
                         ? 'bg-neon-red text-white border-neon-red shadow-[0_0_15px_#e50914] scale-105'
                         : 'bg-background/80 text-gray-300 hover:text-white border-glass-border hover:border-neon-red/50 hover:bg-neon-red/20'
                     }`}
                   >
-                    Tập {ep.number}
+                    {ep.title}
                   </Link>
                 ))}
               </div>
