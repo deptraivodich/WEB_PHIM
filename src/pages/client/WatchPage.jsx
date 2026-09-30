@@ -10,7 +10,7 @@ import {
   getMovieHistory,
   formatDurationToMinutesSeconds 
 } from '../../services/historyService';
-import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { formatVietnameseSentenceCase, extractCleanEpisodeNumber, formatEpisodeTitle, deduplicateEpisodes } from '../../utils/textUtils';
 import { generateSlug } from '../../utils/slugUtils';
 import { trackEvent } from '../../services/telemetryService';
 import { recordMovieView, getMovieStats, toggleMovieLike } from '../../services/interactionService';
@@ -22,7 +22,7 @@ const WatchPage = () => {
   const { currentUser } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const rawEpisode = episode || searchParams.get('ep') || '1';
-  const episodeParam = String(rawEpisode).replace(/^tap-?/i, '') || '1';
+  const episodeParam = extractCleanEpisodeNumber(rawEpisode, '1');
   
   const playerRef = useRef(null);
   const lastSavedTimeRef = useRef(0);
@@ -89,20 +89,20 @@ const WatchPage = () => {
     window.scrollTo(0, 0);
   }, [targetSlug, currentUser?.username]);
 
-  // Resolve episodes list safely
+  // Resolve episodes list safely and deduplicate
   const movieEpisodesList = currentMovie?.episodes || [];
-  const episodes = Array.isArray(movieEpisodesList) && movieEpisodesList.length > 0
+  const rawEpisodes = Array.isArray(movieEpisodesList) && movieEpisodesList.length > 0
     ? movieEpisodesList
     : [{ name: '1', url: currentMovie?.m3u8Url || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8' }];
+  const episodes = deduplicateEpisodes(rawEpisodes);
 
-  const cleanEpState = String(activeEpisodeState).replace(/^tap-?/i, '');
+  const cleanEpState = extractCleanEpisodeNumber(activeEpisodeState || '1', '1');
   const activeEpisodeObj = episodes.find(ep => {
-    const epNameStr = String(ep.name || ep.number || '');
-    const cleanEpName = epNameStr.replace(/^tap-?/i, '');
-    return epNameStr === String(activeEpisodeState) || cleanEpName === cleanEpState;
+    const epCleanNum = extractCleanEpisodeNumber(ep.name || ep.number);
+    return epCleanNum === cleanEpState || String(ep.name) === String(activeEpisodeState);
   }) || episodes[0];
   const activeStreamUrl = activeEpisodeObj?.url || activeEpisodeObj?.m3u8Url || currentMovie?.m3u8Url || 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-  const currentEpName = activeEpisodeObj?.name || activeEpisodeObj?.number || cleanEpState;
+  const currentEpName = extractCleanEpisodeNumber(activeEpisodeObj?.name || activeEpisodeObj?.number || cleanEpState, '1');
   const formattedTitle = formatVietnameseSentenceCase(currentMovie?.title || 'Phim mới');
 
   // Episode Pagination / Chunking (Max 100 episodes per range tab)
@@ -281,7 +281,7 @@ const WatchPage = () => {
           <span>/</span>
           <Link to={`/movie/${movieSlug}`} className="hover:text-neon-cyan transition-colors">{formattedTitle}</Link>
           <span>/</span>
-          <span className="text-amber-400 font-bold">Tập {currentEpName}</span>
+          <span className="text-amber-400 font-bold">{formatEpisodeTitle(currentEpName)}</span>
         </div>
 
         {/* Resume Watching Prompt Dialog Overlay */}
@@ -299,7 +299,7 @@ const WatchPage = () => {
                   </span>
                 </h4>
                 <p className="text-xs text-gray-300 mt-0.5">
-                  Bạn đã xem đến <strong className="text-amber-300">{resumePrompt.formattedTime}</strong> ở Tập {currentEpName}. Bạn có muốn tiếp tục xem không?
+                  Bạn đã xem đến <strong className="text-amber-300">{resumePrompt.formattedTime}</strong> ở {formatEpisodeTitle(currentEpName)}. Bạn có muốn tiếp tục xem không?
                 </p>
               </div>
             </div>
@@ -338,7 +338,7 @@ const WatchPage = () => {
             key={`${activeId}-${currentEpName}-${activeStreamUrl}`}
             ref={playerRef}
             url={activeStreamUrl}
-            title={`${formattedTitle} - Tập ${currentEpName} (${quality})`}
+            title={`${formattedTitle} - ${formatEpisodeTitle(currentEpName)} (${quality})`}
             poster={banner || poster}
             onTimeUpdate={handleTimeUpdate}
             onPlay={handleVideoPlay}
@@ -352,7 +352,7 @@ const WatchPage = () => {
             <h1 className="text-2xl font-bold text-white flex items-center gap-3">
               <span>{formattedTitle} ({year})</span>
               <span className="px-2.5 py-1 rounded-lg text-xs font-black bg-neon-red text-white shadow-[0_0_10px_rgba(229,9,20,0.5)]">
-                Tập {currentEpName}
+                {formatEpisodeTitle(currentEpName)}
               </span>
             </h1>
             <p className="text-gray-400 text-xs sm:text-sm mt-1 font-mono">
@@ -483,7 +483,8 @@ const WatchPage = () => {
               .map((ep, idxInChunk) => {
                 const globalIndex = selectedRangeIndex * CHUNK_SIZE + idxInChunk;
                 const epKey = `watch-ep-btn-${ep.id || globalIndex}-${globalIndex}`;
-                const epNum = ep.name || ep.number || (globalIndex + 1);
+                const rawEpNum = ep.name || ep.number || (globalIndex + 1);
+                const epNum = extractCleanEpisodeNumber(rawEpNum, globalIndex + 1);
                 const isActive = String(epNum) === String(currentEpName);
 
                 return (

@@ -7,7 +7,7 @@ import HomepageCMS from '../../components/admin/HomepageCMS';
 import AutoSyncModal from '../../components/admin/AutoSyncModal';
 import dragonLogo from '../../assets/dragon-logo.png';
 import { ANIME_GENRES } from '../../components/common/Navbar';
-import { formatVietnameseSentenceCase } from '../../utils/textUtils';
+import { formatVietnameseSentenceCase, extractCleanEpisodeNumber, formatEpisodeTitle, deduplicateEpisodes } from '../../utils/textUtils';
 
 /**
  * Defensive Helper: Safely extracts genres as clean string array
@@ -331,17 +331,20 @@ const MovieManagementPage = () => {
   const handleOpenEditModal = (movie) => {
     if (!movie) return;
 
-    let eps = [];
+    let rawEps = [];
     if (Array.isArray(movie.episodes) && movie.episodes.length > 0) {
-      eps = movie.episodes.map((ep, idx) => ({
-        name: String(ep?.name || ep?.number || (idx + 1)),
-        url: String(ep?.url || ep?.m3u8Url || '')
-      }));
+      rawEps = movie.episodes;
     } else if (movie.m3u8Url) {
-      eps = [{ name: '1', url: String(movie.m3u8Url) }];
+      rawEps = [{ name: '1', url: String(movie.m3u8Url) }];
     } else {
-      eps = [{ name: '1', url: '' }];
+      rawEps = [{ name: '1', url: '' }];
     }
+
+    const dedupedEps = deduplicateEpisodes(rawEps);
+    const eps = dedupedEps.map((ep, idx) => ({
+      name: String(ep?.name || ep?.number || (idx + 1)),
+      url: String(ep?.url || ep?.m3u8Url || '')
+    }));
 
     const genreList = getGenresArray(movie);
     const defaultEpCurrent = movie.episodeCurrent || movie.episodesStatus || (eps.length > 0 ? `Tập ${eps.length}` : 'Tập 1');
@@ -404,7 +407,8 @@ const MovieManagementPage = () => {
 
     const genreList = getGenresArray(editingMovie);
     const cleanedEpisodes = (editingMovie.episodes || []).filter(ep => ep && ep.url && ep.url.trim());
-    const finalEpisodes = cleanedEpisodes.length > 0 ? cleanedEpisodes : [{ name: '1', url: editingMovie.m3u8Url || '' }];
+    const dedupedEpisodes = deduplicateEpisodes(cleanedEpisodes);
+    const finalEpisodes = dedupedEpisodes.length > 0 ? dedupedEpisodes : [{ name: '1', url: editingMovie.m3u8Url || '' }];
     const formattedTitle = formatVietnameseSentenceCase(editingMovie.title);
     const finalEpisodeCurrent = editingMovie.episodeCurrent || editingMovie.episodesStatus || (finalEpisodes.length > 0 ? `Tập ${finalEpisodes.length}` : 'Tập 1');
 

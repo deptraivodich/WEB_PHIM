@@ -10,6 +10,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import { deduplicateEpisodes } from '../utils/textUtils';
 
 const COLLECTION_NAME = 'movies';
 const SETTINGS_COLLECTION = 'settings';
@@ -183,18 +184,26 @@ export const getMovies = async () => {
         movies = movies.map(m => {
           const bm = backendMap.get(String(m.id));
           if (bm) {
+            const cloudEps = deduplicateEpisodes(m.episodes || []);
+            const backendEps = deduplicateEpisodes(bm.episodes || []);
+            // Cloud/Firestore is authoritative. Only fallback to backend episodes if cloud episodes is empty!
+            const finalEps = cloudEps.length > 0 ? cloudEps : backendEps;
+
             return {
               ...m,
-              director: bm.director || m.director || '',
-              country: bm.country || m.country || '',
-              status: bm.status || m.status || 'ongoing',
-              episodeCurrent: bm.episode_current || m.episodeCurrent || m.episodesStatus || '',
-              episodesStatus: bm.episode_current || m.episodesStatus || '',
-              episodesCount: bm.episodes_count || m.episodesCount || '',
-              episodes: (Array.isArray(bm.episodes) && bm.episodes.length > (m.episodes?.length || 0)) ? bm.episodes : (m.episodes || [])
+              director: m.director || bm.director || '',
+              country: m.country || bm.country || '',
+              status: m.status || bm.status || 'ongoing',
+              episodeCurrent: m.episodeCurrent || bm.episode_current || m.episodesStatus || '',
+              episodesStatus: m.episodesStatus || bm.episode_current || '',
+              episodesCount: finalEps.length > 0 ? `${finalEps.length} Tập` : (m.episodesCount || bm.episodes_count || ''),
+              episodes: finalEps
             };
           }
-          return m;
+          return {
+            ...m,
+            episodes: deduplicateEpisodes(m.episodes || [])
+          };
         });
       }
     }
@@ -262,8 +271,11 @@ export const addMovie = async (movieData) => {
 export const updateMovie = async (id, updateData) => {
   if (!id) throw new Error("Missing movie ID for update");
 
+  const cleanedEpisodes = deduplicateEpisodes(updateData.episodes || []);
   const payload = sanitizeFirestoreData({
     ...updateData,
+    episodes: cleanedEpisodes,
+    episodesCount: cleanedEpisodes.length > 0 ? `${cleanedEpisodes.length} Tập` : (updateData.episodesCount || '1 Tập'),
     updatedAt: new Date().toISOString()
   });
 
@@ -281,6 +293,18 @@ export const updateMovie = async (id, updateData) => {
   const currentList = getStoredMovies();
   const updatedList = currentList.map(m => (String(m.id) === String(id) ? { ...m, ...payload, id } : m));
   saveStoredMovies(updatedList);
+
+  // 3. Immediately sync updated movie to backend SQLite so SQLite is in sync with Firestore
+  try {
+    fetch('http://localhost:8000/api/movies/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ movies: [{ id, ...payload }] })
+    }).catch(err => console.warn("Backend sqlite sync warning:", err));
+  } catch (e) {
+    // Ignore backend sync failure
+  }
+
   return { id, ...payload };
 };
 
@@ -398,8 +422,30 @@ export const syncAllLocalMoviesToCloud = async () => {
     return { success: false, count: 0, message: "Không có phim nào trong bộ nhớ cục bộ để đồng bộ." };
   }
 
+  // Deduplicate all movies' episodes
+  const sanitizedList = localList.map(movie => {
+    const dedupedEps = deduplicateEpisodes(movie.episodes || []);
+    return {
+      ...movie,
+      episodes: dedupedEps,
+      episodesCount: dedupedEps.length > 0 ? `${dedupedEps.length} Tập` : (movie.episodesCount || '1 Tập')
+    };
+  });
+
+  // 1. Sync to SQLite backend so backend and cloud are 100% in sync
+  try {
+    await fetch('http://localhost:8000/api/movies/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ movies: sanitizedList })
+    }).catch(() => {});
+  } catch (e) {
+    console.warn("Sync to backend sqlite warning:", e);
+  }
+
+  // 2. Sync to Cloud Firestore
   const batch = writeBatch(db);
-  localList.forEach(movie => {
+  sanitizedList.forEach(movie => {
     const { id, ...data } = movie;
     const docId = id && !id.startsWith('local_') && !id.startsWith('mock_') ? id : undefined;
     const docRef = docId ? doc(db, COLLECTION_NAME, docId) : doc(collection(db, COLLECTION_NAME));
@@ -411,5 +457,6 @@ export const syncAllLocalMoviesToCloud = async () => {
   });
 
   await withTimeout(batch.commit(), 6000);
-  return { success: true, count: localList.length };
+  saveStoredMovies(sanitizedList);
+  return { success: true, count: sanitizedList.length };
 };

@@ -7,11 +7,15 @@ const STORAGE_LAST_TIME_KEY = '210loliphim_last_auto_sync_time';
 
 export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
   // Stats
+  // Stats
   const [scannedCount, setScannedCount] = useState(0);
   const [updatedCount, setUpdatedCount] = useState(0);
   const [addedEpisodesCount, setAddedEpisodesCount] = useState(0);
   const [errorCount, setErrorCount] = useState(0);
   const [totalEligible, setTotalEligible] = useState(0);
+
+  // Scan Scope ('all' = Toàn bộ phim trong DB, 'ongoing' = Chỉ phim đang chiếu)
+  const [scanScope, setScanScope] = useState('all');
 
   // Status & Progress
   const [isRunning, setIsRunning] = useState(false);
@@ -63,25 +67,29 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
     }
   }, [logs]);
 
-  // Load initial eligible count when modal opens
+  // Load initial movies count based on scanScope when modal opens or scanScope changes
   useEffect(() => {
     if (!isOpen) return;
 
-    const initEligible = async () => {
+    const initMovies = async () => {
       try {
         const all = await getMovies();
-        const eligible = (Array.isArray(all) ? all : []).filter(isEligibleForAutoUpdate);
-        setTotalEligible(eligible.length);
+        const valid = Array.isArray(all) ? all.filter(m => m && m.id) : [];
+        const targetList = scanScope === 'all' 
+          ? valid 
+          : valid.filter(m => isEligibleForAutoUpdate(m, true));
+
+        setTotalEligible(targetList.length);
         if (logs.length === 0) {
-          appendLog('info', `Hệ thống tìm thấy ${eligible.length} bộ phim đang phát sóng (chưa Hoàn Tất) đủ điều kiện kiểm tra.`);
+          appendLog('info', `Hệ thống tìm thấy ${targetList.length} bộ phim trong cơ sở dữ liệu (${scanScope === 'all' ? 'Toàn bộ phim trong DB' : 'Chỉ phim đang phát sóng'}) sẵn sàng kiểm tra.`);
         }
       } catch (err) {
         console.warn('Lỗi đọc danh sách phim ban đầu:', err);
       }
     };
 
-    initEligible();
-  }, [isOpen]);
+    initMovies();
+  }, [isOpen, scanScope]);
 
   // Handle interval setting change
   const handleIntervalChange = (val) => {
@@ -111,21 +119,30 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
 
     try {
       const all = await getMovies();
-      const eligible = (Array.isArray(all) ? all : []).filter(isEligibleForAutoUpdate);
+      const valid = Array.isArray(all) ? all.filter(m => m && m.id) : [];
+      const targetList = scanScope === 'all' 
+        ? valid 
+        : valid.filter(m => isEligibleForAutoUpdate(m, true));
 
-      if (eligible.length === 0) {
-        appendLog('info', 'Tất cả các phim trong cơ sở dữ liệu đều đã Hoàn Tất hoặc là phim lẻ chiếu rạp.');
+      if (targetList.length === 0) {
+        appendLog('info', 'Không tìm thấy bộ phim nào phù hợp với phạm vi quét đã chọn.');
         return;
       }
 
-      // Sort by oldest updated time first (round-robin)
-      eligible.sort((a, b) => {
+      // Sắp xếp các phim theo thứ tự:
+      // 1. Phim đang phát sóng (ongoing/Active) ưu tiên hơn
+      // 2. Phim chưa kiểm tra lâu nhất (FIFO/Round-robin)
+      targetList.sort((a, b) => {
+        const isOngoingA = a.status === 'ongoing' || a.status === 'Active';
+        const isOngoingB = b.status === 'ongoing' || b.status === 'Active';
+        if (isOngoingA !== isOngoingB) return isOngoingA ? -1 : 1;
+
         const timeA = new Date(a.lastAutoCrawledAt || a.updatedAt || a.updated_at || 0).getTime();
         const timeB = new Date(b.lastAutoCrawledAt || b.updatedAt || b.updated_at || 0).getTime();
         return timeA - timeB;
       });
 
-      setTotalEligible(eligible.length);
+      setTotalEligible(targetList.length);
       setScannedCount(0);
       setUpdatedCount(0);
       setAddedEpisodesCount(0);
@@ -134,8 +151,8 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
 
       isRunningRef.current = true;
       setIsRunning(true);
-      setStatusText('Đang đồng bộ tập mới...');
-      appendLog('info', `Bắt đầu tiến trình đồng bộ ${eligible.length} phim từ PhimAPI...`);
+      setStatusText('Đang đồng bộ tập mới & thông tin...');
+      appendLog('info', `Bắt đầu tiến trình kiểm tra & gộp ${targetList.length} phim (${scanScope === 'all' ? 'Toàn bộ kho phim trong DB' : 'Phim đang phát sóng'})...`);
 
       // Process in batches of 5 movies for snappy live updates
       const BATCH_SIZE = 5;
@@ -144,12 +161,12 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
       let currentAddedEps = 0;
       let currentErrors = 0;
 
-      for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
+      for (let i = 0; i < targetList.length; i += BATCH_SIZE) {
         if (!isRunningRef.current) {
           break;
         }
 
-        const batch = eligible.slice(i, i + BATCH_SIZE);
+        const batch = targetList.slice(i, i + BATCH_SIZE);
         const res = await runAutoUpdateBatch(batch);
 
         if (!isRunningRef.current) {
@@ -158,8 +175,10 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
 
         if (res.status === 'success') {
           const details = res.checkedDetails || [];
+          const checkedSet = new Set();
           for (const d of details) {
             currentScanned += 1;
+            checkedSet.add(String(d.id));
             if (d.status === 'updated') {
               currentUpdated += 1;
               currentAddedEps += d.added_episodes_count || 0;
@@ -168,7 +187,13 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
               currentErrors += 1;
               appendLog('error', d.message || `Lỗi khi kiểm tra "${d.title}".`);
             } else {
-              appendLog('unchanged', d.message || `"${d.title}" đã chuẩn xác đủ ${d.episodes_count || 0} tập, không cần sửa.`);
+              appendLog('unchanged', d.message || `"${d.title}" đã chuẩn xác, không cần sửa.`);
+            }
+          }
+          // Safeguard nếu số phim trong details ít hơn batch
+          for (const b of batch) {
+            if (!checkedSet.has(String(b.id))) {
+              currentScanned += 1;
             }
           }
         } else {
@@ -178,12 +203,13 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
         }
 
         // Update stats
-        setScannedCount(currentScanned);
+        const finalScanned = Math.min(currentScanned, targetList.length);
+        setScannedCount(finalScanned);
         setUpdatedCount(currentUpdated);
         setAddedEpisodesCount(currentAddedEps);
         setErrorCount(currentErrors);
 
-        const pct = Math.min(100, Math.round((currentScanned / eligible.length) * 100));
+        const pct = Math.min(100, Math.round((finalScanned / targetList.length) * 100));
         setProgressPercent(pct);
       }
 
@@ -193,7 +219,7 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
         localStorage.setItem(STORAGE_LAST_TIME_KEY, finishedDateTime);
         setStatusText('Đã hoàn thành đồng bộ');
         setProgressPercent(100);
-        appendLog('info', `🎉 Hoàn tất chu kỳ quét! Đã kiểm tra ${currentScanned} phim, phát hiện ${currentUpdated} phim có tập mới (+${currentAddedEps} tập).`);
+        appendLog('info', `🎉 Hoàn tất chu kỳ quét! Đã kiểm tra ${currentScanned} phim, phát hiện/gộp ${currentUpdated} phim (+${currentAddedEps} tập mới).`);
         if (typeof onFinished === 'function') {
           onFinished();
         }
@@ -254,8 +280,37 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
                 <span>AUTO-SYNC TẬP MỚI</span>
               </div>
 
+              {/* Box: Phạm vi quét phim trong DB */}
+              <div className="bg-[#0f1726] border border-cyan-500/25 rounded-xl p-3.5 space-y-2.5">
+                <div className="flex items-center gap-2 text-cyan-400 font-bold text-xs">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                  </svg>
+                  <span>Phạm vi quét phim trong DB</span>
+                </div>
+
+                <select
+                  value={scanScope}
+                  disabled={isRunning}
+                  onChange={(e) => {
+                    setScanScope(e.target.value);
+                    appendLog('info', `Đã chuyển phạm vi quét: ${e.target.value === 'all' ? 'Toàn bộ kho phim (Tất cả phim trong DB)' : 'Chỉ phim đang phát sóng'}.`);
+                  }}
+                  className="w-full py-2 px-2.5 bg-[#090d16] border border-slate-700/80 rounded-lg text-xs text-gray-200 font-medium focus:outline-none focus:border-cyan-500 cursor-pointer disabled:opacity-50"
+                >
+                  <option value="all">Toàn bộ kho phim ({totalEligible} phim - Khuyến nghị)</option>
+                  <option value="ongoing">Chỉ phim đang phát sóng (chưa hoàn tất)</option>
+                </select>
+
+                <p className="text-[10.5px] text-gray-400 leading-relaxed">
+                  {scanScope === 'all' 
+                    ? 'Quét 100% kho phim trong DB để gộp đạo diễn/tác giả, quốc gia, trạng thái & tập mới.'
+                    : 'Chỉ quét các phim đang chiếu chưa hoàn tất.'}
+                </p>
+              </div>
+
               {/* Box: Tự động quét ngầm định kỳ */}
-              <div className="bg-[#0f1726] border border-emerald-500/25 rounded-xl p-4 space-y-3">
+              <div className="bg-[#0f1726] border border-emerald-500/25 rounded-xl p-3.5 space-y-2.5">
                 <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -266,7 +321,7 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
                 <select
                   value={intervalSetting}
                   onChange={(e) => handleIntervalChange(e.target.value)}
-                  className="w-full py-2.5 px-3 bg-[#090d16] border border-slate-700/80 rounded-lg text-xs text-gray-200 font-medium focus:outline-none focus:border-emerald-500 cursor-pointer"
+                  className="w-full py-2 px-2.5 bg-[#090d16] border border-slate-700/80 rounded-lg text-xs text-gray-200 font-medium focus:outline-none focus:border-emerald-500 cursor-pointer"
                 >
                   <option value="0">Tắt (Chỉ quét khi bấm nút)</option>
                   <option value="120000">2 Phút (~120 giây)</option>
@@ -275,7 +330,7 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
                   <option value="1800000">30 Phút</option>
                 </select>
 
-                <p className="text-[11px] text-gray-400 leading-relaxed">
+                <p className="text-[10.5px] text-gray-400 leading-relaxed">
                   Khi bật, hệ thống sẽ tự động định kỳ quét KKPhim/PhimAPI và chèn các tập mới nhất vào phim mà không cần thao tác tay.
                 </p>
               </div>
@@ -297,7 +352,7 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
                   className="w-full py-3 px-4 rounded-xl font-black text-xs bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
                 >
                   <span className="text-sm">▶</span>
-                  <span>BẮT ĐẦU ĐỒNG BỘ</span>
+                  <span>BẮT ĐẦU ĐỒNG BỘ ({totalEligible} PHIM)</span>
                 </button>
               )}
 
@@ -329,13 +384,13 @@ export default function AutoSyncModal({ isOpen, onClose, onFinished }) {
                 </span>
               </div>
 
-              {/* Card 2: Phim có tập mới */}
+              {/* Card 2: Phim đã cập nhật / gộp */}
               <div className="bg-[#0f1726] border border-emerald-500/30 rounded-xl p-3 text-center flex flex-col justify-center items-center">
                 <span className="text-xl sm:text-2xl font-black text-emerald-400 font-mono leading-none mb-1">
                   {updatedCount}
                 </span>
                 <span className="text-[10px] sm:text-[11px] font-bold text-emerald-300 uppercase tracking-wider">
-                  PHIM CÓ TẬP MỚI
+                  PHIM ĐƯỢC GỘP / CẬP NHẬT
                 </span>
               </div>
 
