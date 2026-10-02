@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { getStoredMovies } from '../../services/movieService';
-
+import { useAuth } from '../../contexts/AuthContext';
+import { getUserWatchHistory } from '../../services/historyService';
 
 /**
  * CineSmartAIBot Component
  * Chatbot Widget AI góc dưới màn hình dành cho Web Phim với giao diện Dark Mode & tông màu Vàng Cam.
  */
 const CineSmartAIBot = () => {
+  const { currentUser } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -15,7 +17,7 @@ const CineSmartAIBot = () => {
   const initialWelcomeMessage = {
     id: 'welcome_msg',
     sender: 'ai',
-    text: 'Xin chào! Tôi là trợ lý AI. Tôi có thể giúp gì cho bạn?',
+    text: 'Xin chào! Tôi là trợ lý CineSmart AI. Bạn muốn tìm phim gì hôm nay, hay cần tôi gợi ý phim theo đúng gu sở thích của bạn?',
     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
 
@@ -47,7 +49,7 @@ const CineSmartAIBot = () => {
     setMessages([{
       id: `msg_reset_${Date.now()}`,
       sender: 'ai',
-      text: 'Xin chào! Tôi là trợ lý AI. Tôi có thể giúp gì cho bạn?',
+      text: 'Xin chào! Tôi là trợ lý CineSmart AI. Bạn muốn tìm phim gì hôm nay, hay cần tôi gợi ý phim theo đúng gu sở thích của bạn?',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }]);
   };
@@ -69,15 +71,94 @@ const CineSmartAIBot = () => {
     setIsTyping(true);
 
     try {
-      // Lấy danh sách tên tất cả phim thực tế đang có trong kho dữ liệu Web
+      // 1. Lấy danh sách tên và thể loại tất cả phim thực tế đang có trong kho dữ liệu Web
       let availableMovies = [];
+      let storedList = [];
       try {
-        const stored = getStoredMovies();
-        if (Array.isArray(stored) && stored.length > 0) {
-          availableMovies = stored.map(m => m.title).filter(Boolean);
+        storedList = getStoredMovies();
+        if (Array.isArray(storedList) && storedList.length > 0) {
+          availableMovies = storedList.map(m => {
+            const rawGenres = Array.isArray(m.genres) ? m.genres : (m.genres ? [m.genres] : (m.category ? [m.category] : []));
+            return {
+              id: m.id,
+              title: m.title,
+              originalTitle: m.originalTitle || '',
+              genres: rawGenres.filter(Boolean),
+              description: m.description ? m.description.slice(0, 160) : ''
+            };
+          }).filter(m => m.title);
         }
       } catch (e) {
         console.warn("Could not read stored movies for AI context:", e);
+      }
+
+      // 2. Lấy LỊCH SỬ XEM PHIM THỰC TẾ của tài khoản người dùng hiện tại
+      let userWatchHistory = [];
+      let topGenre = null;
+      try {
+        const username = currentUser?.username;
+        let rawHistory = [];
+        if (username) {
+          rawHistory = getUserWatchHistory(username);
+        }
+        // Fallback: nếu chưa đăng nhập hoặc rawHistory trống, thử đọc toàn bộ lịch sử trong localStorage
+        if (!rawHistory || rawHistory.length === 0) {
+          try {
+            const rawHistStorage = localStorage.getItem('210loliphim_watch_history_db');
+            if (rawHistStorage) {
+              const parsed = JSON.parse(rawHistStorage);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                rawHistory = parsed;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (Array.isArray(rawHistory) && rawHistory.length > 0) {
+          const genreCount = {};
+          userWatchHistory = rawHistory.map(item => {
+            let itemGenres = Array.isArray(item.genres) ? item.genres : (item.genres ? [item.genres] : []);
+            // Nếu item history không lưu genres thì tra cứu từ stored movies
+            if (itemGenres.length === 0 && (item.title || item.movieId)) {
+              const matched = storedList.find(m => m.title === item.title || String(m.id) === String(item.movieId));
+              if (matched) {
+                if (Array.isArray(matched.genres)) itemGenres = matched.genres;
+                else if (matched.category) itemGenres = [matched.category];
+              }
+            }
+
+            // Lọc các tag kỹ thuật để chỉ giữ lại thể loại nội dung thực tế (Hành động, Phiêu lưu, v.v.)
+            const filteredGenres = itemGenres.filter(g => {
+              if (!g || typeof g !== 'string') return false;
+              const lower = g.trim().toLowerCase();
+              return !['4k', 'full hd', 'hd', 'thuyết minh', 'vietsub', 'phim bộ', 'phim lẻ'].includes(lower);
+            });
+
+            filteredGenres.forEach(g => {
+              const clean = g.trim();
+              genreCount[clean] = (genreCount[clean] || 0) + 1;
+            });
+
+            return {
+              movieId: item.movieId,
+              title: item.title,
+              genres: filteredGenres,
+              progressText: item.progressText || '',
+              watchTime: item.currentTime || 0
+            };
+          });
+
+          // Xác định thể loại được xem nhiều nhất
+          let maxCount = 0;
+          for (const [genreName, count] of Object.entries(genreCount)) {
+            if (count > maxCount) {
+              maxCount = count;
+              topGenre = genreName;
+            }
+          }
+        }
+      } catch (histErr) {
+        console.warn("Could not read user watch history for AI context:", histErr);
       }
 
       const backendApiUrl = import.meta.env.VITE_CHAT_API_URL || 'http://localhost:8000/api/chat';
@@ -86,8 +167,10 @@ const CineSmartAIBot = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text.trim(),
-          user_id: 'anonymous',
-          available_movies: availableMovies
+          user_id: currentUser?.username || 'anonymous',
+          available_movies: availableMovies,
+          user_history: userWatchHistory,
+          top_genre: topGenre
         })
       });
 

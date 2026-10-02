@@ -5,7 +5,7 @@ import sqlite3
 import uuid
 import hashlib
 from contextlib import asynccontextmanager
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 import unicodedata
 #test
@@ -1560,9 +1560,11 @@ async def crawl_movie_api(request: Optional[CrawlRequest] = None, url: Optional[
 class ChatRequest(BaseModel):
     message: str
     user_id: Optional[str] = "anonymous"
-    available_movies: Optional[List[str]] = []
+    available_movies: Optional[List[Any]] = []
+    user_history: Optional[List[Dict[str, Any]]] = []
+    top_genre: Optional[str] = None
 
-def resolve_movie_title(raw_id: str, available_movies: Optional[List[str]] = None) -> str:
+def resolve_movie_title(raw_id: str, available_movies: Optional[List[Any]] = None) -> str:
     """Chuyển đổi movie_id (Document ID Firestore hoặc mã hash) thành tên phim người đọc hiểu được."""
     if not raw_id:
         return "Phim Hay Tuyển Chọn"
@@ -1585,7 +1587,10 @@ def resolve_movie_title(raw_id: str, available_movies: Optional[List[str]] = Non
 
     # 3. Lấy từ danh sách available_movies người dùng truyền lên
     if available_movies and len(available_movies) > 0:
-        return available_movies[0]
+        first_m = available_movies[0]
+        if isinstance(first_m, dict):
+            return first_m.get("title") or "Thất Nghiệp Chuyển Sinh"
+        return str(first_m)
 
     return "Thất Nghiệp Chuyển Sinh"
 
@@ -1652,7 +1657,9 @@ def find_relevant_movies_for_prompt(user_query: str, limit: int = 6) -> str:
 async def cine_smart_ai_chat(payload: ChatRequest):
     """
     Endpoint xử lý trò chuyện thông minh với CineSmart AI.
-    Tích hợp dữ liệu thời gian thực Top 10 Trending từ ClickHouse vào System Prompt của Gemini API.
+    1. Tiếp nhận lịch sử xem phim THỰC TẾ của tài khoản người dùng và phân tích thể loại xem nhiều nhất.
+    2. Gợi ý phim cùng thể loại chính xác từ kho phim 210LoliPhim, tuyệt đối không bịa phim người dùng chưa xem.
+    3. Tích hợp dữ liệu thời gian thực Top Trending từ ClickHouse vào System Prompt của Gemini API.
     """
     user_message = payload.message.strip()
     if not user_message:
@@ -1701,106 +1708,265 @@ async def cine_smart_ai_chat(payload: ChatRequest):
             {"movie_id": "Jujutsu Kaisen Season 2", "movie_title": "Jujutsu Kaisen Season 2", "trending_score": 87.4}
         ]
 
-    trending_context = ", ".join([f"'{m.get('movie_title', m['movie_id'])}' (Điểm HOT: {m['trending_score']})" for m in trending_movies])
+    # 2. Xử lý danh sách toàn bộ phim từ frontend payload + SQLite DB
+    all_catalog_movies = []
+    raw_available = payload.available_movies or []
+    for item in raw_available:
+        if isinstance(item, dict):
+            t = (item.get("title") or "").strip()
+            if t:
+                all_catalog_movies.append({
+                    "title": t,
+                    "original_title": item.get("originalTitle") or item.get("original_title") or "",
+                    "genres": item.get("genres") or [],
+                    "description": item.get("description") or ""
+                })
+        elif isinstance(item, str) and item.strip():
+            all_catalog_movies.append({
+                "title": item.strip(),
+                "original_title": "",
+                "genres": [],
+                "description": ""
+            })
 
-    # 2. Lấy danh sách toàn bộ phim từ SQLite DB + Frontend payload
-    db_movies_list = []
+    # Bổ sung các phim từ SQLite DB nếu chưa có
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT title FROM movies ORDER BY updated_at DESC LIMIT 300")
-        db_movies_list = [row[0] for row in cur.fetchall() if row[0]]
+        cur.execute("SELECT title, original_title FROM movies ORDER BY updated_at DESC LIMIT 300")
+        for row in cur.fetchall():
+            db_title = (row[0] or "").strip()
+            if db_title and not any(m["title"] == db_title for m in all_catalog_movies):
+                all_catalog_movies.append({
+                    "title": db_title,
+                    "original_title": (row[1] or "").strip(),
+                    "genres": [],
+                    "description": ""
+                })
         conn.close()
     except Exception:
         pass
 
-    all_known_movies = list(dict.fromkeys((payload.available_movies or []) + db_movies_list + [m.get('movie_title', m['movie_id']) for m in trending_movies]))
-    real_movies_str = ", ".join([f"'{title}'" for title in all_known_movies[:250]])
+    real_movies_list = [m["title"] for m in all_catalog_movies if m["title"]]
+    real_movies_str = ", ".join([f"'{t}'" for t in real_movies_list[:250]])
 
     # 3. Lấy thông tin chi tiết các phim khớp với câu hỏi người dùng
     relevant_movies_info = find_relevant_movies_for_prompt(user_message, limit=6)
 
-    # 4. Lấy phim mà người dùng xem nhiều nhất từ dữ liệu ClickHouse Telemetry
-    most_watched_movie = None
-    if clickhouse_client:
+    # 4. Phân tích LỊCH SỬ XEM PHIM THỰC TẾ của tài khoản người dùng
+    watched_movie_titles = []
+    watched_movies_info = []
+    genre_tally = {}
+
+    for h in (payload.user_history or []):
+        if isinstance(h, dict):
+            title = (h.get("title") or "").strip()
+            if title and title not in watched_movie_titles:
+                watched_movie_titles.append(title)
+            raw_genres = h.get("genres") or []
+            clean_genres = []
+            if isinstance(raw_genres, list):
+                for g in raw_genres:
+                    if g and isinstance(g, str):
+                        gc = g.strip()
+                        if gc.lower() not in ["4k", "full hd", "hd", "thuyết minh", "vietsub", "phim bộ", "phim lẻ"]:
+                            clean_genres.append(gc)
+                            genre_tally[gc] = genre_tally.get(gc, 0) + 1
+            elif isinstance(raw_genres, str) and raw_genres.strip():
+                gc = raw_genres.strip()
+                clean_genres.append(gc)
+                genre_tally[gc] = genre_tally.get(gc, 0) + 1
+
+            genre_text = f" (Thể loại: {', '.join(clean_genres)})" if clean_genres else ""
+            watched_movies_info.append(f"- Phim đã xem: '{title}'{genre_text}")
+        elif isinstance(h, str) and h.strip():
+            t_str = h.strip()
+            if t_str not in watched_movie_titles:
+                watched_movie_titles.append(t_str)
+                watched_movies_info.append(f"- Phim đã xem: '{t_str}'")
+
+    # Xác định thể loại xem nhiều nhất
+    top_genre = (payload.top_genre or "").strip()
+    if not top_genre and genre_tally:
+        top_genre = max(genre_tally.items(), key=lambda x: x[1])[0]
+
+    # Telemetry ClickHouse dự phòng: CHỈ tra cứu đúng user_id của tài khoản này nếu frontend chưa có user_history
+    if not watched_movie_titles and clickhouse_client and payload.user_id and payload.user_id != 'anonymous':
         try:
-            if payload.user_id and payload.user_id != 'anonymous':
-                user_fav_query = """
-                    SELECT movie_id, sum(watch_time) AS total_seconds
-                    FROM web_phim.user_telemetry_events
-                    WHERE user_id = {user_id:String} AND movie_id != ''
-                    GROUP BY movie_id
-                    ORDER BY total_seconds DESC
-                    LIMIT 1
-                """
-                user_fav_res = clickhouse_client.query(user_fav_query, parameters={"user_id": payload.user_id})
-                if user_fav_res.result_rows:
-                    most_watched_movie = str(user_fav_res.result_rows[0][0])
-
-            if not most_watched_movie:
-                top_fav_query = """
-                    SELECT movie_id, sum(watch_time) AS total_seconds
-                    FROM web_phim.user_telemetry_events
-                    WHERE movie_id != ''
-                    GROUP BY movie_id
-                    ORDER BY total_seconds DESC
-                    LIMIT 1
-                """
-                top_fav_res = clickhouse_client.query(top_fav_query)
-                if top_fav_res.result_rows:
-                    most_watched_movie = str(top_fav_res.result_rows[0][0])
+            user_fav_query = """
+                SELECT movie_id, sum(watch_time) AS total_seconds
+                FROM web_phim.user_telemetry_events
+                WHERE user_id = {user_id:String} AND movie_id != ''
+                GROUP BY movie_id
+                ORDER BY total_seconds DESC
+                LIMIT 5
+            """
+            user_fav_res = clickhouse_client.query(user_fav_query, parameters={"user_id": payload.user_id})
+            for r in user_fav_res.result_rows:
+                raw_m_id = str(r[0])
+                resolved_name = resolve_movie_title(raw_m_id, payload.available_movies)
+                if resolved_name and resolved_name not in watched_movie_titles:
+                    watched_movie_titles.append(resolved_name)
+                    watched_movies_info.append(f"- Phim đã xem: '{resolved_name}'")
         except Exception as e:
-            logger.warning(f"Không thể truy vấn phim xem nhiều nhất từ ClickHouse: {e}")
+            logger.warning(f"Lỗi truy vấn telemetry cho user {payload.user_id}: {e}")
 
-    if most_watched_movie:
-        most_watched_movie = resolve_movie_title(most_watched_movie, payload.available_movies)
+    # 5. Từ điển thể loại & từ đồng nghĩa để nhận diện yêu cầu cụ thể của người dùng
+    genre_synonyms_map = {
+        "Romance / Tình cảm": ["romance", "tình cảm", "lãng mạn", "tình yêu", "ngôn tình", "love", "yêu", "hẹn hò", "bạn gái", "người yêu"],
+        "Hành động / Action": ["action", "hành động", "chiến đấu", "võ thuật", "đánh nhau", "cày cấp", "chiến binh", "thợ săn"],
+        "Hài hước / Comedy": ["comedy", "hài", "hài hước", "vui nhộn", "buồn cười", "bựa", "gây cười"],
+        "Kinh dị / Horror": ["horror", "kinh dị", "rùng rợn", "ma", "quái vật", "u ám", "zombie", "ác quỷ"],
+        "Chuyển sinh / Isekai": ["isekai", "chuyển sinh", "dị giới", "xuyên không", "tái sinh", "trọng sinh"],
+        "Phiêu lưu / Adventure": ["adventure", "phiêu lưu", "khám phá", "hành trình", "thám hiểm"],
+        "Học đường / School": ["school", "học đường", "trường học", "học sinh", "thanh xuân", "cấp 3"],
+        "Khoa học viễn tưởng / Sci-Fi": ["sci-fi", "scifi", "viễn tưởng", "khoa học viễn tưởng", "vũ trụ", "tương lai", "robot", "mecha"],
+        "Trinh thám / Bí ẩn": ["mystery", "trinh thám", "bí ẩn", "thám tử", "phá án", "điều tra"],
+        "Giả tưởng / Fantasy": ["fantasy", "giả tưởng", "phép thuật", "ma thuật", "phù thủy", "thần thoại"]
+    }
+
+    msg_lower = user_message.lower()
+
+    # Kiểm tra xem người dùng có yêu cầu ĐÍCH DANH một thể loại cụ thể hay không
+    detected_genre = None
+    detected_genre_kws = []
+    for g_name, kws in genre_synonyms_map.items():
+        if any(re.search(r'\b' + re.escape(kw) + r'\b', msg_lower) for kw in kws):
+            detected_genre = g_name
+            detected_genre_kws = kws
+            break
+
+    # Kiểm tra xem người dùng có chủ động hỏi về GU CÁ NHÂN hay không
+    is_asking_personal_taste = any(phrase in msg_lower for phrase in [
+        "hợp gu", "gu tôi", "gu của tôi", "gu mình", "hợp với tôi", "hợp với mình",
+        "gu phim của tôi", "sở thích của tôi", "tôi nên xem phim gì", "phim cho tôi"
+    ]) and not detected_genre
+
+    # Tìm các phim trong kho phù hợp với thể loại người dùng CỤ THỂ YÊU CẦU (nếu có)
+    specific_genre_candidates = []
+    if detected_genre:
+        for m in all_catalog_movies:
+            t = m.get("title", "")
+            orig = m.get("original_title", "")
+            desc = m.get("description", "")
+            genres = [str(g).lower() for g in m.get("genres", [])]
+            combined = f"{t} {orig} {desc} {' '.join(genres)}".lower()
+            if any(kw in combined for kw in detected_genre_kws):
+                if t not in specific_genre_candidates:
+                    specific_genre_candidates.append(t)
+
+    # Tìm các phim trong kho CÙNG THỂ LOẠI với top_genre (chưa xem) để gợi ý khi hỏi gu
+    same_genre_candidates = []
+    if top_genre:
+        top_lower = top_genre.lower()
+        for m in all_catalog_movies:
+            t = m["title"]
+            if t in watched_movie_titles:
+                continue
+            m_genres = [str(g).lower() for g in m.get("genres", [])]
+            m_desc = (m.get("description") or "").lower()
+            if any(top_lower in g for g in m_genres) or top_lower in m_desc:
+                if t not in same_genre_candidates:
+                    same_genre_candidates.append(t)
+
+    if not same_genre_candidates:
+        same_genre_candidates = [
+            m["title"] for m in all_catalog_movies if m["title"] not in watched_movie_titles
+        ][:6]
+
+    # 6. Xây dựng ngữ cảnh và System Prompt linh hoạt theo đúng câu hỏi người dùng
+    if detected_genre:
+        user_intent_section = (
+            f"=== YÊU CẦU HIỆN TẠI CỦA NGƯỜI DÙNG ===\n"
+            f"Người dùng đang nhắn: '{user_message}'\n"
+            f"🎯 THỂ LOẠI NGƯỜI DÙNG ĐANG YÊU CẦU: **{detected_genre}**!\n"
+            f"Danh sách các phim {detected_genre} có sẵn trong kho 210LoliPhim: [{', '.join(specific_genre_candidates[:12])}].\n\n"
+            f"=== QUY TẮC BẮT BUỘC CHO CÂU TRẢ LỜI NÀY ===\n"
+            f"1. Người dùng đang yêu cầu phim thể loại {detected_genre}, vì vậy BẮT BUỘC phải giới thiệu 2-3 bộ phim {detected_genre} từ danh sách trên kèm 1-2 câu tóm tắt nội dung ngọt ngào, hấp dẫn.\n"
+            f"2. TUYỆT ĐỐI KHÔNG mở đầu bằng câu rập khuôn 'Với gu thích xem Action của bạn...'! Trả lời tự nhiên, hào hứng, đúng vào thể loại {detected_genre} người dùng muốn xem.\n"
+            f"3. TUYỆT ĐỐI KHÔNG gợi ý phim hành động cày cấp hay thể loại khác khi người dùng hỏi {detected_genre}."
+        )
+    elif is_asking_personal_taste and watched_movie_titles and top_genre:
+        user_intent_section = (
+            f"=== YÊU CẦU HIỆN TẠI: NGƯỜI DÙNG HỎI VỀ GU PHIM CỦA MÌNH ('{user_message}') ===\n"
+            f"- Lịch sử xem phim thực tế của tài khoản: [{', '.join(watched_movie_titles)}].\n"
+            f"- Thể loại xem nhiều nhất: **{top_genre}**.\n"
+            f"- Các phim cùng thể loại '{top_genre}' trong kho (chưa xem): [{', '.join(same_genre_candidates[:8])}].\n\n"
+            f"=== QUY TẮC BẮT BUỘC ===\n"
+            f"1. Trả lời linh hoạt, tự nhiên, sinh động (TUYỆT ĐỐI KHÔNG copy rập khuôn 1 câu duy nhất). Nêu bật rằng qua lịch sử xem phim của họ, họ rất chuộng thể loại **{top_genre}**, sau đó giới thiệu 2-3 phim {top_genre} từ danh sách trên.\n"
+            f"2. KHÔNG bịa phim ngoài lịch sử và KHÔNG gợi ý lại phim đã xem."
+        )
+    elif is_asking_personal_taste:
+        user_intent_section = (
+            f"=== YÊU CẦU: HỎI VỀ GU PHIM NHƯNG CHƯA CÓ LỊCH SỬ XEM ===\n"
+            f"Tài khoản hiện chưa có lịch sử xem phim nào. Hãy thân thiện thông báo tài khoản chưa có lịch sử để phân tích gu riêng, và gợi ý 2-3 phim đang HOT nhất trên 210LoliPhim."
+        )
     else:
-        most_watched_movie = all_known_movies[0] if all_known_movies else "Thất Nghiệp Chuyển Sinh Phần 3"
+        user_intent_section = (
+            f"=== YÊU CẦU HIỆN TẠI CỦA NGƯỜI DÙNG ===\n"
+            f"Người dùng nhắn: '{user_message}'.\n"
+            f"Hãy trả lời tự nhiên, linh hoạt, đúng trọng tâm câu hỏi. TUYỆT ĐỐI KHÔNG tự động chèn vào câu mở đầu rập khuôn hay gợi ý phim lạc đề!"
+        )
 
-    # 5. Xây dựng System Prompt thông minh, chính xác
     system_prompt = (
         "Bạn là 'Trợ lý CineSmart AI', một chuyên gia điện ảnh & anime thông minh, sành sỏi, am hiểu kho phim của nền tảng 210LoliPhim.\n\n"
         "=== DỮ LIỆU KHO PHIM THỰC TẾ TRÊN HỆ THỐNG ===\n"
         f"{relevant_movies_info}\n\n"
-        f"Danh sách các phim đang có trên trang web 210LoliPhim gồm: [{real_movies_str}].\n"
-        f"Phim người dùng xem nhiều nhất theo telemetry: '{most_watched_movie}'.\n\n"
-        "=== QUY TẮC PHẢN HỒI BẮT BUỘC ===\n"
+        f"Danh sách các phim đang có trên trang web 210LoliPhim gồm: [{real_movies_str}].\n\n"
+        f"{user_intent_section}\n\n"
+        "=== QUY TẮC PHẢN HỒI CHUNG ===\n"
         "1. KHI NGƯỜI DÙNG HỎI VỀ TÌNH TRẠNG MỘT BỘ PHIM CỤ THỂ (ví dụ: 'ra hết chưa', 'có bao nhiêu tập', 'đã có phim X chưa'):\n"
-        "   - Hãy tra cứu phần 'THÔNG TIN PHIM TRONG KHO DỮ LIỆU' ở trên. Nếu phim có tên trong đó hoặc trong kho phim, "
+        "   - Tra cứu phần 'THÔNG TIN PHIM TRONG KHO DỮ LIỆU'. Nếu phim có tên trong đó hoặc trong kho phim, "
         "BẮT BUỘC PHẢI KHẲNG ĐỊNH LÀ ĐÃ CÓ TRÊN TRANG WEB 210LoliPhim!\n"
-        "   - TUYỆT ĐỐI KHÔNG ĐƯỢC NÓI LÀ CHƯA CÓ khi dữ liệu ở trên đã cung cấp thông tin về bộ phim đó!\n"
-        "   - Dựa vào phần 'Tình trạng' được cung cấp để trả lời chính xác: nếu ghi 'ĐÃ RA HẾT TRỌN BỘ' thì khẳng định phim đã ra hết đủ tập, nếu ghi 'ĐANG CHIẾU' thì báo số tập hiện có và đang cập nhật tiếp.\n"
-        "2. TUYỆT ĐỐI KHÔNG TỰ BỊA RA CÁC PHIM HOẶC MÙA PHIM KHÔNG TỒN TẠI (ví dụ: không được bịa 'Học viện siêu anh hùng mùa 8' khi mùa 8 chưa có).\n"
-        "3. KHI ĐƯỢC XIN GỢI Ý PHIM HOẶC HỎI 'Phim hợp gu tôi': Chọn 2-3 phim trong kho phim thực tế có cùng thể loại để giới thiệu hào hứng.\n"
-        "4. Hãy luôn trả lời ngắn gọn, thân thiện, vui tính, dùng icon sinh động và định dạng Markdown (in đậm, danh sách bullet)."
+        "   - TUYỆT ĐỐI KHÔNG ĐƯỢC NÓI LÀ CHƯA CÓ khi dữ liệu đã cung cấp thông tin về bộ phim đó!\n"
+        "   - Dựa vào phần 'Tình trạng' được cung cấp để trả lời: nếu 'ĐÃ RA HẾT TRỌN BỘ' thì khẳng định phim đã ra hết đủ tập, nếu 'ĐANG CHIẾU' thì báo số tập hiện có và đang cập nhật tiếp.\n"
+        "2. TUYỆT ĐỐI KHÔNG TỰ BỊA RA CÁC PHIM HOẶC MÙA PHIM KHÔNG TỒN TẠI.\n"
+        "3. Hãy luôn trả lời linh hoạt, tự nhiên, vui tính, đúng trọng tâm câu hỏi của người dùng, dùng icon sinh động và định dạng Markdown (in đậm, danh sách bullet)."
     )
 
     # 3. Gửi System Prompt + Tin nhắn tới Gemini
-    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not gemini_key:
-        # Đọc dự phòng từ file .env nếu Docker container chưa reload biến môi trường
-        try:
-            for env_candidate in ["/app/../.env", ".env", "../.env"]:
-                if os.path.exists(env_candidate):
-                    with open(env_candidate, "r", encoding="utf-8") as ef:
-                        for eline in ef:
-                            if eline.strip().startswith("GEMINI_API_KEY="):
-                                gemini_key = eline.split("=", 1)[1].strip().strip('"').strip("'")
+    # Ưu tiên đọc key mới nhất từ file .env nếu có để khi người dùng sửa .env là có hiệu lực ngay
+    gemini_key = ""
+    for env_candidate in ["/app/.env", ".env", "../.env", "/app/../.env"]:
+        if os.path.exists(env_candidate):
+            try:
+                with open(env_candidate, "r", encoding="utf-8") as ef:
+                    for eline in ef:
+                        if eline.strip().startswith("GEMINI_API_KEY="):
+                            k = eline.split("=", 1)[1].strip().strip('"').strip("'")
+                            if k:
+                                gemini_key = k
                                 break
-                if gemini_key:
-                    break
-        except Exception:
-            pass
+            except Exception:
+                pass
+        if gemini_key:
+            break
+
+    if not gemini_key:
+        gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
 
     if not gemini_key:
         logger.warning("GEMINI_API_KEY chưa được thiết lập.")
         # Phản hồi dự phòng thông minh khi chưa có API Key
-        fallback_reply = (
-            f"🎬 **Trợ lý CineSmart AI** (Chế độ offline):\n"
-            f"Dưới đây là các phim đang **HOT nhất** trên hệ thống theo thống kê ClickHouse thời gian thực:\n"
-            + "\n".join([f"• **{m.get('movie_title', m['movie_id'])}** (Độ HOT: {m['trending_score']})" for m in trending_movies[:5]])
-            + "\n\n*(Lưu ý: Hãy thiết lập `GEMINI_API_KEY` trong môi trường Docker để kích hoạt mô hình Gemini đầy đủ!)*"
-        )
+        if detected_genre and specific_genre_candidates:
+            fallback_reply = (
+                f"Chào bạn! ✨ Dưới đây là những bộ phim thể loại **{detected_genre}** cực hay trên 210LoliPhim mà bạn không nên bỏ lỡ:\n\n"
+                + "\n".join([f"• **{t}**" for t in specific_genre_candidates[:3]])
+                + "\n\nChúc bạn có những giờ phút xem phim ngọt ngào và vui vẻ nhé! 🍿"
+            )
+        elif is_asking_personal_taste and top_genre and same_genre_candidates:
+            fallback_reply = (
+                f"Chào bạn! ✨ Điểm qua lịch sử xem phim của bạn, mình thấy bạn rất chuộng thể loại **{top_genre}**. Dưới đây là vài bộ phim siêu đỉnh đúng gu của bạn trên 210LoliPhim:\n\n"
+                + "\n".join([f"• **{t}**" for t in same_genre_candidates[:3]])
+                + "\n\nChúc bạn xem phim vui vẻ nhé! 🚀"
+            )
+        else:
+            fallback_reply = (
+                f"🎬 **Trợ lý CineSmart AI**:\n"
+                f"Dưới đây là các phim đang **HOT nhất** trên hệ thống 210LoliPhim theo thống kê thời gian thực:\n"
+                + "\n".join([f"• **{m.get('movie_title', m['movie_id'])}** (Độ HOT: {m['trending_score']})" for m in trending_movies[:5]])
+                + "\n\n*(Lưu ý: Hãy thiết lập `GEMINI_API_KEY` trong môi trường Docker để kích hoạt mô hình Gemini đầy đủ!)*"
+            )
         return {
             "status": True,
             "reply": fallback_reply,
@@ -1829,11 +1995,11 @@ async def cine_smart_ai_chat(payload: ChatRequest):
             }
             for model_name in candidate_models:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}"
-                payload = {
+                payload_json = {
                     "contents": [{"parts": [{"text": full_prompt}]}]
                 }
                 try:
-                    res = await client.post(url, headers=headers, json=payload)
+                    res = await client.post(url, headers=headers, json=payload_json)
                     if res.status_code == 200:
                         data = res.json()
                         candidates = data.get("candidates", [])
@@ -1879,25 +2045,40 @@ async def cine_smart_ai_chat(payload: ChatRequest):
     except Exception as err:
         logger.error(f"Lỗi khi gọi Gemini API: {err}")
         err_msg = str(err)
-        suggested_movie = (
-            trending_movies[0].get('movie_title')
-            if trending_movies and trending_movies[0].get('movie_title')
-            else (real_movies_list[0] if real_movies_list else "Thất Nghiệp Chuyển Sinh")
-        )
-
-        if "401" in err_msg or "ACCESS_TOKEN_TYPE_UNSUPPORTED" in err_msg or "invalid authentication" in err_msg:
+        
+        # Nếu lỗi và người dùng hỏi thể loại cụ thể hoặc hợp gu, ưu tiên phản hồi thông minh theo đúng yêu cầu
+        if detected_genre and specific_genre_candidates:
             reply = (
-                f"🤖 **Trợ lý CineSmart AI**: Khóa API Gemini hiện tại chưa hợp lệ (Lỗi 401: ACCESS_TOKEN_TYPE_UNSUPPORTED).\n\n"
-                f"💡 **Nguyên nhân & Cách khắc phục:**\n"
-                f"- Khóa `GEMINI_API_KEY` trong `docker-compose.yml` đang điền dạng token `AQ...` (đây là OAuth token, không phải API Key).\n"
-                f"- Bạn hãy vào [Google AI Studio](https://aistudio.google.com/app/apikey) tạo một API Key miễn phí (bắt đầu bằng `AIzaSy...`) rồi dán vào `docker-compose.yml`.\n\n"
-                f"🍿 Dù vậy, tôi gợi ý bạn trải nghiệm ngay bộ phim **{suggested_movie}** đang làm mưa làm gió trên hệ thống!"
+                f"Chào bạn! ✨ Dưới đây là những bộ phim thể loại **{detected_genre}** cực hay trên 210LoliPhim mà bạn không nên bỏ lỡ:\n\n"
+                + "\n".join([f"• **{t}**" for t in specific_genre_candidates[:3]])
+                + "\n\nChúc bạn xem phim vui vẻ nhé! 🍿"
+            )
+        elif is_asking_personal_taste and top_genre and same_genre_candidates:
+            reply = (
+                f"Chào bạn! ✨ Điểm qua lịch sử xem phim của bạn, mình thấy bạn rất chuộng thể loại **{top_genre}**. Dưới đây là vài bộ phim siêu đỉnh đúng gu của bạn trên 210LoliPhim:\n\n"
+                + "\n".join([f"• **{t}**" for t in same_genre_candidates[:3]])
+                + "\n\nChúc bạn xem phim vui vẻ nhé! 🚀"
             )
         else:
-            reply = (
-                f"🤖 **Trợ lý CineSmart AI**: Rất tiếc có sự cố kết nối với Gemini API ({err_msg}). "
-                f"Tuy nhiên tôi gợi ý bạn trải nghiệm ngay bộ phim **{suggested_movie}** đang làm mưa làm gió!"
+            suggested_movie = (
+                trending_movies[0].get('movie_title')
+                if trending_movies and trending_movies[0].get('movie_title')
+                else (real_movies_list[0] if real_movies_list else "Thất Nghiệp Chuyển Sinh")
             )
+
+            if "401" in err_msg or "ACCESS_TOKEN_TYPE_UNSUPPORTED" in err_msg or "invalid authentication" in err_msg:
+                reply = (
+                    f"🤖 **Trợ lý CineSmart AI**: Khóa API Gemini hiện tại chưa hợp lệ hoặc đã hết hạn (Lỗi 401: Unauthorized).\n\n"
+                    f"💡 **Nguyên nhân & Cách khắc phục:**\n"
+                    f"- Khóa `GEMINI_API_KEY` trong file `.env` chưa đúng hoặc đã hết hạn.\n"
+                    f"- Bạn hãy vào [Google AI Studio](https://aistudio.google.com/app/apikey) tạo một API Key Gemini miễn phí rồi dán vào file `.env`.\n\n"
+                    f"🍿 Dù vậy, tôi gợi ý bạn trải nghiệm ngay bộ phim **{suggested_movie}** đang làm mưa làm gió trên hệ thống!"
+                )
+            else:
+                reply = (
+                    f"🤖 **Trợ lý CineSmart AI**: Rất tiếc có sự cố kết nối với Gemini API ({err_msg}). "
+                    f"Tuy nhiên tôi gợi ý bạn trải nghiệm ngay bộ phim **{suggested_movie}** đang làm mưa làm gió!"
+                )
 
         return {
             "status": True,
