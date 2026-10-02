@@ -32,6 +32,8 @@ services:
       dockerfile: Dockerfile
     container_name: webphim_fastapi
     restart: always
+    env_file:
+      - .env
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: 8123
@@ -40,12 +42,13 @@ services:
       CLICKHOUSE_PASSWORD: default_password
       BATCH_SIZE: 50
       FLUSH_INTERVAL_SECONDS: 5
-      GEMINI_API_KEY: AQ.Ab8RN6L74oCD-TqJGjwvs4677JijqhZKN7Ex4M-MKdI2KIGK8A
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
 
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - ./.env:/app/.env:ro
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
     depends_on:
